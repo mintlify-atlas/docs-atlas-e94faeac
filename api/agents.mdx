@@ -1,0 +1,362 @@
+---
+title: "Artex Agents & Skills API: Configure AI Agents and Tools"
+sidebarTitle: "Agents & Skills API"
+description: "Manage agent configuration, prompts, triggers, built-in and custom tools, skills, MCP server integrations, and notification channels."
+---
+
+Artex's autonomous behaviour is driven by named agents (planner, worker, and any custom agents you define). Each agent has a system prompt, an optional LLM profile binding, a tool set, and trigger rules. Skills are filesystem-based tool packages that extend what agents can do; MCP servers expose additional tools over the Model Context Protocol.
+
+---
+
+## Agents
+
+### GET /api/agents
+
+List all agents (built-in and custom).
+
+**AgentDTO fields**
+
+<ResponseField name="id" type="string">Agent ID (numeric string).</ResponseField>
+<ResponseField name="key" type="string">Unique string key used in API paths (e.g., `"worker"`, `"planner"`).</ResponseField>
+<ResponseField name="name" type="string">Display name.</ResponseField>
+<ResponseField name="description" type="string">What this agent does.</ResponseField>
+<ResponseField name="role" type="string">`planner` | `worker` | `chat` | `custom`</ResponseField>
+<ResponseField name="builtin" type="boolean">`true` for the system planner and worker agents.</ResponseField>
+<ResponseField name="enabled" type="boolean">Whether this agent participates in task execution.</ResponseField>
+<ResponseField name="max_turns" type="integer">Maximum conversation turns per run (`0` = unlimited).</ResponseField>
+<ResponseField name="run_seconds" type="integer">Wall-clock run budget in seconds (`0` = unlimited; default 1200).</ResponseField>
+<ResponseField name="web_search" type="boolean">Whether web search is enabled for this agent.</ResponseField>
+<ResponseField name="llm_profile_id" type="integer">Bound LLM profile ID (`null` = follow task chain / global active).</ResponseField>
+<ResponseField name="trigger_run_mode" type="string">`serial` (one run at a time) or `parallel` (concurrent runs up to `trigger_max_parallel`).</ResponseField>
+<ResponseField name="mcp_count" type="integer">Number of MCP servers bound to this agent.</ResponseField>
+<ResponseField name="skill_count" type="integer">Number of skills visible to this agent.</ResponseField>
+<ResponseField name="tool_count" type="integer">Number of built-in tools bound to this agent.</ResponseField>
+
+---
+
+### GET /api/agents/{key}
+
+Fetch a single agent's full configuration by its key.
+
+---
+
+### PATCH /api/agents/{key}
+
+Update agent configuration fields.
+
+<ParamField body="name" type="string">Display name.</ParamField>
+<ParamField body="description" type="string">Agent description.</ParamField>
+<ParamField body="enabled" type="boolean">Enable or disable the agent.</ParamField>
+<ParamField body="max_turns" type="integer">Maximum turns per run. `0` = unlimited.</ParamField>
+<ParamField body="run_seconds" type="integer">Wall-clock budget in seconds. `0` = unlimited.</ParamField>
+<ParamField body="web_search" type="boolean">Enable or disable web search for this agent.</ParamField>
+<ParamField body="llm_profile_id" type="integer">Bind to a specific LLM profile. `null` = follow task/global chain.</ParamField>
+<ParamField body="trigger_run_mode" type="string">`serial` or `parallel`.</ParamField>
+<ParamField body="trigger_merge_mode" type="string">Event merge strategy: `merge` (coalesce same-task events) or `""` (no merge).</ParamField>
+<ParamField body="trigger_max_parallel" type="integer">Maximum concurrent runs when `trigger_run_mode` is `parallel` (`0` = unlimited).</ParamField>
+<ParamField body="interactive_shell" type="boolean">Allow this agent to use an interactive shell session.</ParamField>
+
+---
+
+### DELETE /api/agents/{key}
+
+Delete a custom agent. Built-in agents (`planner`, `worker`) cannot be deleted.
+
+---
+
+## Agent Prompts
+
+### GET /api/agents/{key}/prompts
+
+Return the prompt version history for an agent (newest first). Each entry has `id`, `prompt`, `created_at`, and `is_current`.
+
+---
+
+### PUT /api/agents/{key}/prompt
+
+Save a new prompt version for the agent, making it the current active prompt.
+
+<ParamField body="prompt" type="string" required>The full system prompt text. Supports template variables (see below).</ParamField>
+
+### POST /api/agents/{key}/prompt/reset
+
+Reset the agent's prompt to the built-in default.
+
+---
+
+### GET /api/agents/{key}/variables
+
+Return the list of template variable names available for use in this agent's prompt (e.g., `{{task_description}}`, `{{task_goal}}`).
+
+---
+
+### POST /api/agents/{key}/prompt/preview
+
+Render the agent's prompt template with sample values to preview the final text sent to the LLM.
+
+<ParamField body="prompt" type="string">Prompt template to preview. Uses the saved prompt if omitted.</ParamField>
+<ParamField body="variables" type="object">Variable overrides for preview rendering.</ParamField>
+
+---
+
+## Agent Wrapup Prompts
+
+Artex calls a wrapup prompt when a task completes or times out, giving the agent a chance to summarize findings and write a report.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/api/agents/{key}/wrapup` | Save the normal wrapup prompt |
+| `POST` | `/api/agents/{key}/wrapup/reset` | Reset to built-in default |
+| `PUT` | `/api/agents/{key}/wrapup/task-timeout` | Save the task-timeout wrapup prompt |
+| `POST` | `/api/agents/{key}/wrapup/task-timeout/reset` | Reset task-timeout wrapup to default |
+
+---
+
+## Agent Triggers
+
+Triggers fire a custom agent automatically in response to events (new finding, goal met, new goal, interval timer).
+
+### GET /api/agents/{key}/triggers
+
+List all triggers for an agent.
+
+<ResponseField name="id" type="integer">Trigger ID.</ResponseField>
+<ResponseField name="event" type="string">`finding`, `goal_met`, `goal`, `interval`.</ResponseField>
+<ResponseField name="enabled" type="boolean">Whether the trigger fires.</ResponseField>
+<ResponseField name="interval_seconds" type="integer">For `interval` triggers: fire interval in seconds.</ResponseField>
+<ResponseField name="filter" type="object">Optional event filter (e.g., filter by severity for `finding` triggers).</ResponseField>
+
+---
+
+### POST /api/agents/{key}/triggers
+
+Create a new trigger.
+
+<ParamField body="event" type="string" required>`finding` | `goal_met` | `goal` | `interval`</ParamField>
+<ParamField body="enabled" type="boolean">Active on creation. Defaults to `true`.</ParamField>
+<ParamField body="interval_seconds" type="integer">Required for `interval` event type.</ParamField>
+<ParamField body="filter" type="object">Event-specific filter criteria.</ParamField>
+
+### PATCH /api/triggers/{id}
+
+Update a trigger (note: path uses `/api/triggers/`, not `/api/agents/{key}/triggers/`).
+
+### DELETE /api/triggers/{id}
+
+Delete a trigger.
+
+---
+
+## Built-in Tools
+
+### GET /api/tools
+
+List all built-in tool definitions including their descriptions, schemas, and per-agent bindings.
+
+<ResponseField name="key" type="string">Tool key (e.g., `run_command`, `http_request`).</ResponseField>
+<ResponseField name="name" type="string">Display name.</ResponseField>
+<ResponseField name="description" type="string">Tool description sent to the LLM.</ResponseField>
+<ResponseField name="enabled" type="boolean">Whether the tool is available to agents.</ResponseField>
+
+---
+
+### PUT /api/tools/{key}
+
+Update a built-in tool's description or per-agent binding. You cannot change tool logic — only the metadata the LLM sees.
+
+<ParamField body="description" type="string">Override the tool description shown to the LLM.</ParamField>
+<ParamField body="enabled" type="boolean">Enable or disable this tool globally.</ParamField>
+<ParamField body="agent_bindings" type="array">Array of agent keys that should have access to this tool. Empty = available to all.</ParamField>
+<ParamField body="default_values" type="object">Default argument values injected when the LLM omits optional params.</ParamField>
+
+### POST /api/tools/{key}/reset
+
+Reset a tool's description and bindings to the built-in defaults.
+
+---
+
+## Custom Tools
+
+Custom tools are Python scripts or shell commands that agents can call like built-in tools.
+
+### POST /api/tools/custom
+
+Create a new custom tool.
+
+<ParamField body="key" type="string" required>Unique tool key (lowercase, underscores only).</ParamField>
+<ParamField body="name" type="string" required>Display name shown in the tool list.</ParamField>
+<ParamField body="description" type="string" required>Tool description sent to the LLM (defines when and how the model uses it).</ParamField>
+<ParamField body="script" type="string" required>Python or shell script body that implements the tool.</ParamField>
+<ParamField body="schema" type="object">JSON Schema for the tool's input parameters.</ParamField>
+<ParamField body="interpreter" type="string">`python` or `bash`. Defaults to `python`.</ParamField>
+
+---
+
+### POST /api/tools/custom/test
+
+Test a custom tool by running its script with sample arguments.
+
+<ParamField body="key" type="string" required>Key of the custom tool to test.</ParamField>
+<ParamField body="args" type="object">Argument values to pass to the tool script.</ParamField>
+
+**Response**
+
+<ResponseField name="output" type="string">Script stdout.</ResponseField>
+<ResponseField name="error" type="string">Script stderr or error message.</ResponseField>
+<ResponseField name="duration_ms" type="integer">Execution duration.</ResponseField>
+
+---
+
+### PUT /api/tools/custom/{key}
+
+Update a custom tool's script, description, schema, or bindings.
+
+### DELETE /api/tools/custom/{key}
+
+Delete a custom tool.
+
+---
+
+## Skills
+
+Skills are zip-packaged tool bundles stored on the filesystem. Each skill has its own directory with scripts, metadata, and optional configuration.
+
+### GET /api/skills
+
+List all installed skills.
+
+<ResponseField name="name" type="string">Skill name (directory name).</ResponseField>
+<ResponseField name="description" type="string">Skill description from metadata.</ResponseField>
+<ResponseField name="enabled" type="boolean">Whether the skill is active.</ResponseField>
+<ResponseField name="tools" type="array">Tool names exported by this skill.</ResponseField>
+
+---
+
+### POST /api/skills
+
+Create a new empty skill directory.
+
+<ParamField body="name" type="string" required>Skill name (used as directory name — lowercase, no spaces).</ParamField>
+<ParamField body="description" type="string">Short description of what this skill does.</ParamField>
+
+---
+
+### POST /api/skills/upload
+
+Upload a skill as a `.zip` file. The archive is extracted into the skills directory.
+
+Accepts `multipart/form-data` with a `file` field containing the zip archive. The archive must contain a `skill.json` metadata file at its root.
+
+---
+
+### DELETE /api/skills/{name}
+
+Delete a skill and all its files permanently.
+
+---
+
+### GET /api/skills/{name}/files
+
+List all files in a skill's directory.
+
+---
+
+### GET /api/skills/{name}/files/{file}
+
+Read the contents of a skill file. `{file}` captures path segments including slashes (e.g., `scripts/extract.py`).
+
+---
+
+### PUT /api/skills/{name}/files/{file}
+
+Write or overwrite a skill file.
+
+<ParamField body="content" type="string" required>New file content.</ParamField>
+
+### DELETE /api/skills/{name}/files/{file}
+
+Delete a file from a skill.
+
+---
+
+### GET /api/skills/missing
+
+List skill names that agents tried to call but are not installed. Useful for identifying skills that need to be added.
+
+---
+
+## MCP Servers
+
+MCP (Model Context Protocol) servers expose additional tools to agents over a structured interface.
+
+### GET /api/mcp
+
+List all configured MCP servers.
+
+<ResponseField name="id" type="integer">MCP server ID.</ResponseField>
+<ResponseField name="name" type="string">Display name.</ResponseField>
+<ResponseField name="url" type="string">MCP server endpoint URL.</ResponseField>
+<ResponseField name="enabled" type="boolean">Whether this server's tools are available to agents.</ResponseField>
+<ResponseField name="tool_count" type="integer">Number of tools discovered from this server.</ResponseField>
+
+---
+
+### POST /api/mcp
+
+Save (create or update) an MCP server configuration.
+
+<ParamField body="id" type="integer">Pass to update an existing entry; omit to create new.</ParamField>
+<ParamField body="name" type="string" required>Display name for the server.</ParamField>
+<ParamField body="url" type="string" required>MCP server endpoint URL.</ParamField>
+<ParamField body="enabled" type="boolean">Enable on creation. Defaults to `true`.</ParamField>
+<ParamField body="headers" type="object">Extra HTTP headers to include in requests to this MCP server.</ParamField>
+
+---
+
+### DELETE /api/mcp/{id}
+
+Remove an MCP server configuration and its cached tool list.
+
+---
+
+### GET /api/mcp/{id}/tools
+
+Return the cached tool list from an MCP server — name, description, and input schema for each tool.
+
+---
+
+### POST /api/mcp/{id}/refresh
+
+Re-query the MCP server and refresh its tool list cache.
+
+<ResponseField name="tool_count" type="integer">Number of tools found after refresh.</ResponseField>
+
+---
+
+## Notifications
+
+Artex can push finding alerts to external channels (Feishu, Slack, DingTalk, webhook, etc.).
+
+### GET /api/notify/channels
+
+List all configured notification channels.
+
+### POST /api/notify/channels
+
+Create a new notification channel.
+
+<ParamField body="type" type="string" required>Channel type (e.g., `feishu`, `slack`, `webhook`, `dingtalk`).</ParamField>
+<ParamField body="name" type="string" required>Display name for the channel.</ParamField>
+<ParamField body="config" type="object" required>Channel-specific configuration (webhook URL, token, etc.).</ParamField>
+<ParamField body="enabled" type="boolean">Defaults to `true`.</ParamField>
+<ParamField body="filter" type="object">Finding filter rules for this channel (e.g., only push `critical` and `high` findings).</ParamField>
+
+Additional channel management endpoints follow the same pattern:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PATCH` | `/api/notify/channels/{id}` | Update channel config or filter |
+| `DELETE` | `/api/notify/channels/{id}` | Delete a channel |
+| `POST` | `/api/notify/channels/{id}/test` | Send a test notification |
+| `GET` | `/api/notify/deliveries` | List delivery records (sent/failed) |
+| `POST` | `/api/notify/deliveries/{id}/retry` | Retry a failed delivery |

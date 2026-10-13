@@ -1,0 +1,75 @@
+---
+title: "Artex System Architecture: A Complete Layered Overview"
+sidebarTitle: "Architecture"
+description: "Artex layers explained: embedded Next.js, Go HTTP server, event-driven engine, norma agents, PostgreSQL dual graph, MITM proxy, and all norma SDK packages."
+---
+
+Artex is built as a single Go binary that embeds a statically-exported Next.js frontend alongside a PostgreSQL-backed multi-agent system. Rather than separating concerns across microservices, every layer — from the user interface through LLM orchestration down to the database — ships as one executable. Understanding how these layers interact helps you configure the system correctly, extend it with custom agents and skills, and reason about where in the pipeline a given behavior originates.
+
+## Layer Overview
+
+The table below mirrors the architecture diagram in the README and maps each layer to its primary responsibility.
+
+| Layer | Responsibility |
+|---|---|
+| **Frontend** | Next.js static export embedded via `go:embed` into the single binary. Provides the dashboard, task management, asset graph, exploration chain visualization, coverage map, traffic replay, and human-in-the-loop chat interface. |
+| **server** | `net/http` router with JWT authentication and Server-Sent Events (SSE). The `Manager` manages the lifecycle of tasks, engines, and database stores. REST routes live under `/api/*`. |
+| **engine** | One `plannerLoop` goroutine plus N `workerLoop` goroutines per task. Handles intent claiming, debounced planner wake-ups, pause/drain/timeout, and per-work kill/steer control. |
+| **agent** | Four roles — goals, planner, worker, mainagent — each backed by the norma SDK. A shared `ToolSet` exposes the dual graph as LLM-callable tools. |
+| **db** | PostgreSQL via `pgx`. The dual-graph schema (asset graph + exploration graph) is embedded with `go:embed` and applied idempotently on every startup — no manual migrations. |
+| **supporting** | Recording MITM proxy for traffic capture, guard/intercept approval gate, async DNS/HTTP enrichment, MCP integration, skills, memory, and report generation. |
+
+## Data Flow
+
+The frontend communicates with the backend over HTTP. The REST API routes requests to the `Manager`, which owns task and engine lifecycle. The engine drives the planning and worker goroutines, which call `planner.Plan` and `worker.Execute` respectively. Both of those functions read and write through the dual-graph database stores. When workers execute shell commands, HTTP requests, or web fetches, all traffic is routed through the recording MITM proxy for full audit logging. The SSE endpoint pushes live activity events from the engine's `Broadcaster` back to the frontend in real time.
+
+## The norma SDK Packages
+
+All agent capability is provided by the [`norma`](https://github.com/Autumn-27/norma) SDK. Each package has a distinct role in the agent loop.
+
+<Accordion title="Core loop packages">
+| Package | Role |
+|---|---|
+| `agentcore` | The public entry point. Provides a stateful `Session` whose `Prompt` method streams the tool-use loop. Aggregates all other packages and supports transcript persistence for session resume. |
+| `harness` | The event loop itself. Streams `Event` values, schedules tools (parallel for read-only, serial for mutating), pairs every `tool_use` with a `tool_result`, and enforces termination reasons. |
+| `llm` | Vendor-neutral message model and `Provider` interface. `NewProvider` builds either an Anthropic or OpenAI-format adapter; both normalize to the same streaming event type. |
+| `tool` | `CoreTool` contract, fail-closed `Build` factory, JSON Schema validator, and the default tool set: Read, Write, Edit, MultiEdit, LS, Glob, Grep, Bash. Also provides WebFetch, WebSearch, TodoWrite, background-task tools, and deferred tools. |
+| `permission` | The safety boundary: allow/deny/ask decisions, six permission modes, and a four-stage evaluation pipeline. Artex runs agents in `ModeBypass` with its own guard/intercept layer. |
+| `compaction` | Context-window management. Implements Snip, MicroCompact, Context Collapse, and AutoCompact strategies so long-running agents stay within the model's context limit. |
+</Accordion>
+
+<Accordion title="Extended capability packages">
+| Package | Role |
+|---|---|
+| `hook` | Eight lifecycle hooks (PreToolUse, PostToolUse, Stop, …) as Go callbacks. Artex uses PreToolUse hooks to drain the planner's steer-work queue before each worker tool call. |
+| `subagent` | An `Agent` tool that delegates to isolated child agents with a recursion-depth guard. |
+| `mcp` | Model Context Protocol integration — stdio JSON-RPC client and in-process servers, exposing tools as `mcp__<server>__<tool>`. |
+| `plan` | Plan mode: read-only exploration followed by a user-approval gate, then the agent switches to implementation mode. |
+| `memory` | Persistent long-term memory via markdown-with-frontmatter files and a `MEMORY.md` index, with relevance selection and `RecallMemory`/`RecordMemory` tools. |
+| `skill` | Named, reusable instruction packages loaded from `SKILL.md` files. The `Skill` tool injects a chosen skill's procedure as standing guidance that survives compaction. |
+| `coordinator` | Coordinator mode: a top-level agent that decomposes work and fans it out to isolated worker subagents, either LLM-driven or via programmatic `RunParallel`. |
+</Accordion>
+
+## Supporting Subsystems
+
+**Recording MITM proxy** — Workers route all outbound HTTP/HTTPS through a local MITM proxy. The proxy records every request and response with CA-signed certificate rewriting, making the full traffic history available through `traffic_search` and `traffic_get` tools. The proxy address is injected into worker Bash environments via standard proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `SSL_CERT_FILE`, etc.) so most CLI tools pick it up automatically.
+
+**Guard and intercept** — An approval gate sits on every tool call. Before execution, a tool can be routed to the intercept queue for human review. The operator approves or denies from the Intercept Approvals page. The engine's `steerHooks` layer wraps the guard so the planner can also inject real-time steering messages into running workers.
+
+**Enrich** — When a worker writes a new asset (domain, service, or site), the enrichment engine asynchronously triggers DNS resolution and HTTP probing to fill in missing metadata without adding latency to the worker's own run.
+
+**MCP and skills** — Remote MCP servers can be configured in system settings via Streamable HTTP (`http`) or legacy SSE transport. Skills are `.md` files in the `./skills` directory and can be bound to specific agents in the Agent management UI.
+
+## Explore Further
+
+<CardGroup cols={3}>
+  <Card title="Dual Graph" icon="diagram-project" href="/concepts/dual-graph">
+    How the Asset Graph and Exploration Graph work together and link through anchors.
+  </Card>
+  <Card title="Agent Roles" icon="users" href="/concepts/agent-roles">
+    Goals decomposer, planner, worker, and main agent — what each one does.
+  </Card>
+  <Card title="Engine Lifecycle" icon="rotate" href="/concepts/engine-lifecycle">
+    The event-driven plannerLoop, intent states, and task control operations.
+  </Card>
+</CardGroup>

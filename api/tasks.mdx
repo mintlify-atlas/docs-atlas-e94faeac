@@ -1,0 +1,407 @@
+---
+title: "Artex Tasks API: Create, Control & Manage Pentest Tasks"
+sidebarTitle: "Tasks API"
+description: "Full reference for task lifecycle endpoints: create, start, pause, drain, batch control, coverage, goals, constraints, assets, archives, categories, and templates."
+---
+
+Tasks are the top-level unit of work in Artex. Each task drives an independent planner + worker agent loop against a target. This reference covers every endpoint for creating, controlling, and inspecting tasks, as well as the related resources — goals, constraints, scope, assets, archives, categories, and templates.
+
+---
+
+## Task Object
+
+The `TaskDTO` returned by most task endpoints includes:
+
+<ResponseField name="id" type="string">Numeric string task ID.</ResponseField>
+<ResponseField name="name" type="string">Optional human-readable name.</ResponseField>
+<ResponseField name="description" type="string">Free-text target description used to seed the first asset.</ResponseField>
+<ResponseField name="goal" type="string">The pentest objective passed to the planner.</ResponseField>
+<ResponseField name="status" type="string">`created` | `queued` | `running` | `paused` | `done` | `failed`</ResponseField>
+<ResponseField name="created_at" type="string">RFC 3339 creation timestamp.</ResponseField>
+<ResponseField name="completed_at" type="string">RFC 3339 finish timestamp, empty while running.</ResponseField>
+<ResponseField name="tokens" type="object">`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`.</ResponseField>
+<ResponseField name="findings" type="object">Finding counts by severity: `critical`, `high`, `medium`, `low`.</ResponseField>
+<ResponseField name="goals_total" type="integer">Total number of exploration goals.</ResponseField>
+<ResponseField name="goals_met" type="integer">Goals with `met` state.</ResponseField>
+<ResponseField name="in_flight" type="integer">Number of currently running worker intents.</ResponseField>
+<ResponseField name="llm_profile_ids" type="array">Ordered list of LLM profile IDs assigned to this task (failover chain).</ResponseField>
+<ResponseField name="coverage_enabled" type="boolean">Whether asset coverage tracking is active for this task.</ResponseField>
+
+---
+
+## List & Create Tasks
+
+### GET /api/tasks
+
+Return all tasks with per-task token usage, last-activity timestamps, and finding counts.
+
+```bash
+curl http://localhost:8787/api/tasks \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response**
+
+<ResponseField name="tasks" type="array">Array of `TaskDTO` objects.</ResponseField>
+<ResponseField name="active" type="string">ID of the currently active task, or empty string.</ResponseField>
+
+---
+
+### POST /api/tasks
+
+Create a new task. Artex seeds an initial asset from the `description`/`goal` text and starts the planner unless `seed_first_intent` is set.
+
+<ParamField body="description" type="string" required>
+  Free-text description of the target (e.g., a URL, IP, or domain). The server parses a host from this text to seed the asset graph.
+</ParamField>
+
+<ParamField body="goal" type="string" required>
+  The pentest objective. Passed verbatim to the planner as the task goal.
+</ParamField>
+
+<ParamField body="name" type="string">
+  Optional short display name shown in the task list.
+</ParamField>
+
+<ParamField body="category_id" type="integer">
+  Assign the task to an existing category.
+</ParamField>
+
+<ParamField body="llm_profile_ids" type="array">
+  Ordered list of LLM profile IDs to use for this task (failover chain). Omit to use the global active profile.
+</ParamField>
+
+<ParamField body="timeout_seconds" type="integer">
+  Hard wall-clock task timeout in seconds. `0` = unlimited.
+</ParamField>
+
+<ParamField body="plan_heartbeat_seconds" type="integer">
+  Planner heartbeat interval in seconds (minimum 600; values below 600 are raised automatically). Default `600`.
+</ParamField>
+
+<ParamField body="seed_first_intent" type="boolean">
+  When `true`, one worker intent is seeded immediately at creation so a worker can claim it before the planner's first round. Useful for CTF-style single-intent tasks.
+</ParamField>
+
+<ParamField body="coverage_enabled" type="boolean">
+  Enable asset coverage tracking for this task. Defaults to `true`.
+</ParamField>
+
+<ParamField body="company_ids" type="array">
+  Associate the task with up to the allowed limit of company IDs. Their current asset snapshots are linked to the task scope.
+</ParamField>
+
+<ParamField body="source_task_ids" type="array">
+  IDs of existing tasks whose findings and exploration history are inherited as read-only sources.
+</ParamField>
+
+<ParamField body="intercept_rules" type="array">
+  Task-scoped intercept rules to create alongside the task. Each element has `pattern`, `action`, and `enabled`.
+</ParamField>
+
+**Response:** `201` with the `TaskDTO` of the created task.
+
+---
+
+## Get & Update a Task
+
+### GET /api/tasks/{id}
+
+Fetch a single task by ID.
+
+### PATCH /api/tasks/{id}
+
+Update a task's mutable metadata fields such as `name`, `description`, `goal`, or `category_id`. Returns the updated `TaskDTO`.
+
+### PATCH /api/tasks/{id}/category
+
+Set the task category independently (convenience endpoint).
+
+<ParamField body="category_id" type="integer">Target category ID, or `null` to clear.</ParamField>
+
+---
+
+## Task Control
+
+### POST /api/tasks/{id}/control
+
+Start, stop, pause, or resume a single task.
+
+<ParamField body="action" type="string" required>
+  One of `pause` or `resume`. (Tasks start automatically on creation; stop is handled via archive or task deletion.)
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8787/api/tasks/42/control \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "pause"}'
+```
+
+---
+
+### POST /api/tasks/control/batch
+
+Apply a control action to multiple tasks in one request.
+
+<ParamField body="ids" type="array" required>
+  Array of task ID strings.
+</ParamField>
+
+<ParamField body="action" type="string" required>
+  `pause` or `resume`.
+</ParamField>
+
+---
+
+## Coverage
+
+### GET /api/tasks/{id}/coverage
+
+Return asset test coverage statistics for the task.
+
+<ResponseField name="enabled" type="boolean">False when coverage is disabled for this task.</ResponseField>
+<ResponseField name="by_type" type="array">Per-asset-type breakdown with `total`, `tested`, and `backlog` counts.</ResponseField>
+
+### GET /api/tasks/{id}/coverage-graph
+
+Return the force-directed asset coverage graph data for visualization.
+
+<ResponseField name="nodes" type="array">Asset nodes annotated with `tested` and `in_scope` flags.</ResponseField>
+<ResponseField name="edges" type="array">Graph edges connecting assets to root domains and companies.</ResponseField>
+
+---
+
+## Goals
+
+Goals direct the planner's attention. Artex decomposes the task goal into sub-goals automatically; you can also add, edit, or delete goals manually.
+
+### GET /api/tasks/{id}/goals
+
+List all goals for the task.
+
+<ResponseField name="id" type="string">Goal node ID.</ResponseField>
+<ResponseField name="text" type="string">Goal description text.</ResponseField>
+<ResponseField name="vulnclass" type="string">Optional vulnerability class hint.</ResponseField>
+<ResponseField name="state" type="string">`open` | `met` | `deleted`</ResponseField>
+
+### POST /api/tasks/{id}/goals
+
+Add a new exploration goal (also revives a stopped task).
+
+<ParamField body="text" type="string" required>Human-readable goal text.</ParamField>
+<ParamField body="vulnclass" type="string">Optional vulnerability class (e.g., `"sqli"`).</ParamField>
+
+### PATCH /api/tasks/{id}/goals/{gid}
+
+Edit an existing goal's text or vulnclass.
+
+### DELETE /api/tasks/{id}/goals/{gid}
+
+Hard-delete a goal without reviving the task.
+
+---
+
+## Constraints
+
+Constraints are allow/deny rules that restrict what the worker agents may or may not do.
+
+### GET /api/tasks/{id}/constraints
+
+List all constraints for the task.
+
+<ResponseField name="id" type="string">Constraint node ID.</ResponseField>
+<ResponseField name="kind" type="string">`allow` or `deny`.</ResponseField>
+<ResponseField name="text" type="string">Human-readable constraint description.</ResponseField>
+
+### POST /api/tasks/{id}/constraints
+
+Add a new constraint.
+
+<ParamField body="kind" type="string" required>`allow` or `deny`.</ParamField>
+<ParamField body="text" type="string" required>Description of what is allowed or denied.</ParamField>
+
+### PATCH /api/tasks/{id}/constraints/{cid}
+
+Edit constraint text or kind.
+
+### DELETE /api/tasks/{id}/constraints/{cid}
+
+Remove a constraint.
+
+---
+
+## Assets
+
+### POST /api/tasks/{id}/assets
+
+Attach existing global assets to the task scope.
+
+<ParamField body="asset_ids" type="array" required>Array of integer asset IDs to attach.</ParamField>
+
+### DELETE /api/tasks/{id}/assets/{assetID}
+
+Detach an asset from the task.
+
+### GET /api/tasks/{id}/scope
+
+List the task's scope rows (the denominator for coverage calculations).
+
+<ResponseField name="scope" type="array">Array of scope rows, each with `kind`, `value`, `reason`, and `source`.</ResponseField>
+
+---
+
+## Task Archives
+
+Archives move completed tasks to cold storage, freeing the active task list.
+
+### POST /api/tasks/{id}/archive
+
+Queue a task for archiving (asynchronous).
+
+### GET /api/task-archives
+
+List all task archives.
+
+<ResponseField name="id" type="string">Archive ID.</ResponseField>
+<ResponseField name="task_id" type="string">Original task ID.</ResponseField>
+<ResponseField name="status" type="string">`pending` | `done` | `failed`</ResponseField>
+
+### GET /api/task-archives/{id}
+
+Get details of a specific archive entry.
+
+### POST /api/task-archives/{id}/restore
+
+Restore a task from its archive (asynchronous).
+
+### POST /api/tasks/archive/batch
+
+Queue multiple tasks for archiving at once.
+
+<ParamField body="ids" type="array" required>Array of task ID strings.</ParamField>
+
+### POST /api/task-archives/restore/batch
+
+Restore multiple archives at once.
+
+### DELETE /api/task-archives/{id}
+
+Delete an archive entry permanently.
+
+---
+
+## Task Categories
+
+Categories are user-defined labels for grouping tasks.
+
+### GET /api/task-categories
+
+List all categories.
+
+### POST /api/task-categories
+
+Create a new category.
+
+<ParamField body="name" type="string" required>Display name for the category.</ParamField>
+
+### PATCH /api/task-categories/{id}
+
+Rename an existing category.
+
+### DELETE /api/task-categories/{id}
+
+Delete a category (tasks lose their category assignment).
+
+### POST /api/tasks/category/batch
+
+Assign multiple tasks to a category at once.
+
+<ParamField body="ids" type="array" required>Array of task ID strings.</ParamField>
+<ParamField body="category_id" type="integer">Target category ID, or `null` to clear.</ParamField>
+
+---
+
+## Task Templates
+
+Templates let you pre-fill task creation forms with reusable configurations.
+
+### GET /api/task-templates
+
+List all saved templates.
+
+### POST /api/task-templates
+
+Create a new template.
+
+<ParamField body="name" type="string" required>Template display name.</ParamField>
+<ParamField body="description" type="string">Template task description.</ParamField>
+<ParamField body="goal" type="string">Template task goal.</ParamField>
+
+### PATCH /api/task-templates/{id}
+
+Update a template's fields.
+
+### DELETE /api/task-templates/{id}
+
+Delete a template.
+
+---
+
+## LLM Profile Assignment
+
+### PUT /api/tasks/{id}/llm
+
+Replace the ordered LLM profile chain for a task.
+
+<ParamField body="llm_profile_ids" type="array" required>Ordered list of profile IDs (first = active). Empty array resets to global profile.</ParamField>
+<ParamField body="active_llm_profile_id" type="integer">Explicitly set which profile in the chain is currently active.</ParamField>
+
+### GET /api/tasks/{id}/llm/resolution
+
+Return a breakdown of which LLM profile each agent in this task resolves to (binding → task chain → global).
+
+---
+
+## Worker Intent Control
+
+### POST /api/tasks/{id}/intents/{iid}/control
+
+Pause, resume, or cancel a single worker intent.
+
+<ParamField body="action" type="string" required>`pause` | `resume` | `cancel`</ParamField>
+<ParamField body="reason" type="string">Required when `action` is `cancel` — the cancellation reason.</ParamField>
+<ParamField body="mode" type="string">Cancel mode: `soft` (default, marks deleted) or `hard` (cascades to child intents).</ParamField>
+
+### POST /api/tasks/{id}/intents/{iid}/messages
+
+Send a human message to a running worker intent session.
+
+<ParamField body="message" type="string" required>The message text to inject.</ParamField>
+
+### POST /api/tasks/{id}/intents/{iid}/rerun
+
+Re-open a single `blocked`, `exhausted`, or `stopped` intent and restart execution.
+
+### POST /api/tasks/{id}/intents/rerun-blocked
+
+Batch re-open all `blocked` intents in the task.
+
+<ResponseField name="reopened" type="integer">Number of intents re-opened.</ResponseField>
+<ResponseField name="queued" type="boolean">Whether the task was re-queued for admission.</ResponseField>
+
+---
+
+## Task-scoped Intercept Rules
+
+These mirror the global intercept rules but apply only to a specific task.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/tasks/{id}/intercept-rules` | List task-level rules |
+| `POST` | `/api/tasks/{id}/intercept-rules` | Create a rule |
+| `PUT` | `/api/tasks/{id}/intercept-rules/{rid}` | Update a rule |
+| `DELETE` | `/api/tasks/{id}/intercept-rules/{rid}` | Delete a rule |
+| `POST` | `/api/tasks/{id}/intercept-rules/{rid}/toggle` | Enable / disable a rule |
+
+See the [Intercept API](/api/intercept) for rule field details.

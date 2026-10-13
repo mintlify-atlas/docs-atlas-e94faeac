@@ -1,47 +1,120 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Run Artex in Under 5 Minutes with Docker Compose"
+sidebarTitle: "Quickstart"
+description: "Clone the repo, set a Postgres password, run docker compose up, and open the setup wizard — Artex is live in under five minutes on your local machine."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+The fastest way to get Artex running is Docker Compose. It pulls the pre-built `mianhuatang11/artex` image together with a PostgreSQL 16 container, wires them up over an internal network, and exposes the application on port **8787**. You only need Docker and about five minutes.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Tip>
+  Want to see Artex before installing anything? The online demo at [https://artex-demo.mhtsec.com](https://artex-demo.mhtsec.com) runs entirely in the browser with mock data — no backend required.
+</Tip>
 
 ## Prerequisites
 
-Before you begin, you must have:
+- **Docker** with the **Compose** plugin (`docker compose version` should succeed)
+- An internet connection to pull the image
+- Optionally, an Anthropic or OpenAI API key — you can also configure LLM credentials later in the UI
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the repository">
+    Grab the source repo. Even when running via Docker Compose you need the repository for the `docker-compose.yml`, `.env.example`, and persistent-mount directories.
 
     ```bash
-    npm install your-package
+    git clone https://github.com/mhtsec/ARTEX.git
+    cd ARTEX
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Copy the environment template">
+    The `.env.example` file contains every variable the Compose stack reads. Copy it to `.env` so Docker Compose picks it up automatically.
 
     ```bash
-    your-cli init
+    cp .env.example .env
+    ```
+
+    The template looks like this:
+
+    ```ini .env.example
+    # Docker deployment config — copy to .env
+    ARTEX_TAG=latest
+    POSTGRES_USER=artex
+    POSTGRES_PASSWORD=change-me-please
+    POSTGRES_DB=artex
+
+    # LLM — pick one or both; can also be set later in the UI
+    ANTHROPIC_API_KEY=
+    OPENAI_API_KEY=
+    ARTEX_LLM_PROVIDER=
+    ARTEX_LLM_MODEL=
+    ARTEX_LLM_BASE_URL=
+    ARTEX_LLM_PROXY=
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Set your Postgres password and optional LLM key">
+    Open `.env` in any editor and replace the placeholder values. At a minimum, change `POSTGRES_PASSWORD` — the default value is intentionally obvious and should not be used in any real environment.
+
+    ```ini .env
+    POSTGRES_PASSWORD=a-strong-random-password
+
+    # Optional — you can configure these later in the Artex UI instead
+    ANTHROPIC_API_KEY=sk-ant-...
+    # OPENAI_API_KEY=sk-...
+    ```
+
+    <Note>
+      If you prefer OpenAI or an OpenAI-compatible provider (e.g. a local Ollama endpoint), set `OPENAI_API_KEY` and optionally `ARTEX_LLM_BASE_URL` pointing to your provider's base URL. You can also leave both keys blank and configure everything through the **LLM Configuration** page in the UI after first login.
+    </Note>
+  </Step>
+
+  <Step title="Start the stack">
+    Pull the images and start both containers in the background:
 
     ```bash
-    your-cli start
+    docker compose up -d
     ```
+
+    Docker Compose pulls `mianhuatang11/artex` (the application) and `postgres:16-alpine` (the database), then starts them. The `./skills` and `./data` directories are bind-mounted into the container so your data persists across container restarts and image upgrades.
+
+    <Note>
+      If the `mianhuatang11/artex` image is unavailable or you want to build from your local source changes, run `docker compose build && docker compose up -d` instead. The Dockerfile is a multi-stage build: Next.js static export → Go static binary → minimal runtime image.
+    </Note>
+
+    Check that both containers are healthy:
+
+    ```bash
+    docker compose ps
+    docker compose logs -f artex
+    ```
+  </Step>
+
+  <Step title="Open Artex in your browser">
+    Navigate to **[http://localhost:8787](http://localhost:8787)**.
+
+    On first run you will be redirected to `/setup`.
+  </Step>
+
+  <Step title="Complete the /setup wizard">
+    The `/setup` page lets you create the initial administrator account. Choose a strong password — this is the only account with full system access until you add more users.
+
+    After submitting the form you are logged in automatically and taken to the dashboard.
+
+    <Note>
+      The `/setup` route is only accessible once. After an admin account exists the page returns a redirect to the login screen. If you ever need to reset credentials, connect directly to the PostgreSQL container and modify the `users` table.
+    </Note>
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What's Next
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+Now that Artex is running, you can:
+
+- Go to **LLM Configuration** in the sidebar to set or verify your API key and choose a model
+- Open **System Settings** to adjust the number of concurrent worker agents per task (default: 3)
+- Create your first task by navigating to **Tasks → New Task** and entering a target scope
+- Explore the **Assets** and **Coverage Map** views to visualize discovered infrastructure
+
+For a full breakdown of installation methods — including building from source, downloading a prebuilt binary, and running the cross-platform release build — see the [Installation](/installation) guide.

@@ -1,0 +1,200 @@
+---
+title: "Reusable Agent Skills — Procedures on Demand"
+sidebarTitle: "Skills"
+description: "Package multi-step attack procedures into versioned SKILL.md files that agents invoke by name, with built-in skills for API recon, browser automation, and ScopeSentry."
+---
+
+Skills are named, reusable instruction packages that agents can invoke on demand. Instead of embedding complex multi-step procedures directly into an agent's system prompt — where they inflate context for every turn — a skill's instructions are loaded only when needed and injected as standing guidance that survives context compaction. Skills follow the [agentskills.io](https://agentskills.io) open standard, making them portable and easy to author.
+
+## What Is a Skill?
+
+A skill is a directory containing a `SKILL.md` file. The file has two parts:
+
+1. **YAML frontmatter** — metadata fields read by Artex at load time.
+2. **Markdown body** — the step-by-step instructions the agent receives when the skill is invoked.
+
+When an agent calls the built-in `Skill` tool with a skill name, the Markdown body is injected into the conversation as a separate guidance message (not as a tool result). This means compaction cannot summarize it away — the full procedure text re-appears after any context boundary.
+
+### SKILL.md Format
+
+```yaml
+---
+name: my-skill
+description: Call this skill when you need to do X. Briefly explains what the skill does and when to use it.
+license: MIT
+compatibility: kali-linux
+mcps:
+  - my-mcp-server
+---
+
+# My Skill
+
+Step-by-step instructions in plain Markdown...
+```
+
+<ParamField path="name" type="string" required>
+  The skill's unique identifier. Used as the argument to the `Skill` tool. Must contain only lowercase letters, numbers, and hyphens (ASCII). Non-ASCII names (e.g. Chinese) are also accepted as skill names.
+</ParamField>
+
+<ParamField path="description" type="string" required>
+  Shown in the agent's available-skills listing each turn. Should answer both "what does this skill do" and "when should I invoke it". Keep it under ~500 characters for best results in the listing.
+</ParamField>
+
+<ParamField path="license" type="string">
+  Optional. SPDX license identifier for the skill's content.
+</ParamField>
+
+<ParamField path="compatibility" type="string">
+  Optional. Environment note, e.g. `kali-linux` or `docker`.
+</ParamField>
+
+<ParamField path="mcps" type="string | string[]">
+  Optional. One or more MCP server names that this skill requires. When the agent invokes this skill, those MCP servers are unlocked and their tools become available in the agent's tool list. See [Skill-Declared MCPs](#skill-declared-mcps).
+</ParamField>
+
+## How Agents Use Skills
+
+The `Skill` tool is available in every agent's tool set. When called with a skill name, it:
+
+1. Looks up the skill in the registry.
+2. Returns a short acknowledgement in the tool result (e.g. `"Skill 'api-recon' loaded. Its instructions were added as a guidance message — follow them."`).
+3. Injects the full Markdown body as a separate `user` message marked as skill invocation guidance.
+
+This separate message placement is deliberate. During context compaction, Artex re-injects skill invocation messages verbatim after the summary boundary, so a long-running worker that has had its context compressed can still access the skill's complete procedure.
+
+If a skill is invoked but does not exist in the registry, the agent receives a clear error listing the available skill names.
+
+## Built-in Skills
+
+Three skills ship with Artex in the `./skills/` directory:
+
+<CardGroup cols={1}>
+  <Card title="api-recon" icon="magnifying-glass-chart">
+    **Frontend API reconnaissance.** A structured multi-phase procedure for discovering backend API endpoints, frontend routes, and UI interaction points from a web application — without credentials. Covers static bundle harvesting, runtime capture via Playwright, authentication mock strategies, and parameter enumeration. Call this skill when you need to map an application's API surface before vulnerability testing.
+  </Card>
+  <Card title="playwright-cli" icon="browser">
+    **Browser automation with playwright-cli.** Full command reference for the `playwright-cli` tool: opening browsers, navigating, clicking, filling forms, managing cookies/localStorage, intercepting network requests, taking screenshots, and multi-tab workflows. Also covers session management, DevTools inspection, and video recording. Call this skill when you need to automate browser interactions against a target.
+  </Card>
+  <Card title="scopesentry" icon="radar">
+    **ScopeSentry MCP integration.** A guide for using the ScopeSentry security platform via its MCP interface. Covers connecting to a ScopeSentry instance, querying assets with the DSL search syntax, creating scan tasks with different target source modes, building scan templates, and two-phase scanning workflows for large domain sets. Declares `scopesentry-mcp` in its `mcps` field so the MCP server is unlocked automatically when the skill is invoked.
+  </Card>
+</CardGroup>
+
+## Skill Directory
+
+By default, Artex loads skills from a `./skills/` directory next to the binary. You can change this path in two ways:
+
+<Tabs>
+  <Tab title="Environment Variable">
+    ```bash
+    export ARTEX_SKILL_DIR=/opt/my-skills
+    ./start.sh
+    ```
+  </Tab>
+  <Tab title="config.json">
+    ```json
+    {
+      "skill_dir": "/opt/my-skills"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+Each skill is a subdirectory of the skill directory. The subdirectory name is used as a fallback skill name if the `SKILL.md` frontmatter does not include a `name` field.
+
+## Skill Management
+
+### Listing Skills
+
+Navigate to **System → Skills** (or call `GET /api/skills`) to see all loaded skills with their names, descriptions, usage counts, last invocation time, and any missing dependencies.
+
+### Creating a Skill
+
+<Steps>
+  <Step title="Via the UI">
+    Click **New Skill** and give it a name. Artex creates the directory and a blank `SKILL.md` for you to edit in the built-in file editor.
+  </Step>
+  <Step title="Via the API">
+    ```bash
+    POST /api/skills
+    {"name": "my-skill"}
+    ```
+  </Step>
+</Steps>
+
+### Uploading a Skill as a Zip
+
+You can package a complete skill directory (including scripts and reference files) as a zip archive and upload it:
+
+```bash
+# Create the zip from your skill directory
+zip -r my-skill.zip my-skill/
+
+# Upload via the UI: System → Skills → Upload Zip
+# Or via the API:
+curl -F "file=@my-skill.zip" https://artex.local/api/skills/upload
+```
+
+<Note>
+Artex supports Deflate, Bzip2, and Zstandard compressed zips. Encrypted archives are not supported. File names may contain Unicode characters (including Chinese). If your zip was created on Windows with GBK encoding, Artex decodes the filenames correctly.
+</Note>
+
+### Editing Skill Files
+
+The file manager under a skill entry lets you read, write, create directories, and delete files within the skill directory. This is how you update scripts, add reference documents, or modify the `SKILL.md` itself without shell access.
+
+```bash
+GET  /api/skills/{name}/files/{path}   # read a file
+PUT  /api/skills/{name}/files/{path}   # write a file
+DELETE /api/skills/{name}/files/{path} # delete a file or directory
+POST /api/skills/{name}/dirs           # create a directory
+```
+
+### Deleting a Skill
+
+```bash
+DELETE /api/skills/{name}
+```
+
+This removes the skill directory and all its contents. The operation is irreversible.
+
+## Skill Usage Tracking
+
+The skills list shows, for each skill:
+
+- **Usage count** — total number of times the `Skill` tool has been called with this skill's name
+- **Last used** — timestamp of the most recent invocation
+- **Missing skills** — the `GET /api/skills/missing` endpoint lists skill names that agents tried to invoke but that do not exist in the registry, helping you identify gaps
+
+```bash
+GET /api/skills/missing          # names of skills agents asked for but couldn't find
+GET /api/skills/{name}/usage     # recent invocation log for a specific skill
+```
+
+## Skill Visibility Controls
+
+Each skill can be enabled or disabled per agent. When a skill is disabled for an agent, it does not appear in that agent's available-skills listing and cannot be invoked.
+
+Manage visibility under **System → Skills → (skill name) → Visibility**, or via:
+
+```bash
+GET  /api/visibility/skill/{name}   # get visibility settings
+POST /api/visibility/skill/toggle   # toggle for a specific agent
+```
+
+## Skill-Declared MCPs
+
+A skill can declare a list of MCP servers it requires in its frontmatter `mcps` field. These MCP servers are not visible to the agent by default (they are "deferred"). When the agent invokes the skill, Artex:
+
+1. Unlocks the declared MCP servers for that session.
+2. Appends the new tool names to the tool acknowledgement message.
+3. Makes those MCP tools available for the agent to call immediately.
+
+This pattern keeps rarely-needed tools out of the agent's context until they are actually required, reducing context inflation. The `scopesentry` skill uses this mechanism to unlock the ScopeSentry MCP server only when the agent decides to use it.
+
+```yaml
+# In SKILL.md frontmatter:
+mcps:
+  - scopesentry-mcp
+  - another-server
+```

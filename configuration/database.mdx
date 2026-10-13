@@ -1,0 +1,168 @@
+---
+title: "Configuring PostgreSQL for Artex: Connection & Schema"
+sidebarTitle: "Database"
+description: "Set up Artex's PostgreSQL connection using config.json field-by-field or a full DSN string. Covers environment variable overrides, connection pooling, and schema auto-migration."
+---
+
+Artex uses PostgreSQL as its sole persistent store, holding both the global Asset Graph and all per-task Exploration Graphs. You must supply a working PostgreSQL connection before Artex can start — there is no embedded or fallback database. Connection settings are read at startup from `config.json`, with an environment variable override that always wins.
+
+## Configuration file
+
+Copy `config.example.json` to `config.json` in the same directory as the Artex binary (or specify an alternate path with `ARTEX_CONFIG`). Only two top-level keys exist in the file: `database` and `skill_dir`. All other settings are handled via environment variables or the dashboard.
+
+```json config.json
+{
+  "database": {
+    "host": "127.0.0.1",
+    "port": 5433,
+    "user": "artex",
+    "password": "",
+    "dbname": "artex",
+    "sslmode": "disable"
+  },
+  "skill_dir": "/opt/artex/skills"
+}
+```
+
+### Field reference
+
+<ParamField body="database.host" type="string" default="127.0.0.1">
+  Hostname or IP address of the PostgreSQL server. Defaults to `127.0.0.1` when
+  assembled from individual fields.
+</ParamField>
+
+<ParamField body="database.port" type="integer" default="5432">
+  TCP port the PostgreSQL server listens on. The example file uses `5433` to
+  avoid clashing with a locally-installed system Postgres. Change to `5432` for
+  a default install.
+</ParamField>
+
+<ParamField body="database.user" type="string">
+  PostgreSQL role Artex connects as. The role needs `CREATE TABLE`, `ALTER
+  TABLE`, and `CREATE INDEX` on the target database for schema migration to
+  succeed.
+</ParamField>
+
+<ParamField body="database.password" type="string">
+  Password for the database user. Leave empty if the server accepts
+  trust/peer/ident authentication for this role.
+</ParamField>
+
+<ParamField body="database.dbname" type="string">
+  Name of the database to connect to. Create it before starting Artex:
+  `CREATE DATABASE artex;`
+</ParamField>
+
+<ParamField body="database.sslmode" type="string" default="disable">
+  SSL negotiation mode passed directly to the `pgx` driver. Accepted values:
+  `disable`, `require`, `verify-ca`, `verify-full`. Use `require` or
+  `verify-full` for any non-local deployment.
+</ParamField>
+
+## DSN alternative
+
+Instead of filling in individual fields, you can supply a single `database.dsn` key containing a full PostgreSQL connection string. When `dsn` is non-empty it is used directly and all other `database.*` fields are ignored.
+
+<ParamField body="database.dsn" type="string">
+  A full PostgreSQL DSN in URL format. When set, this overrides `host`, `port`,
+  `user`, `password`, `dbname`, and `sslmode`. Leave this key absent (or the
+  object out entirely) to use the individual fields instead.
+</ParamField>
+
+<Tabs>
+  <Tab title="Individual fields">
+    ```json config.json
+    {
+      "database": {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "user": "artex",
+        "password": "yourpass",
+        "dbname": "artex",
+        "sslmode": "disable"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Full DSN">
+    ```json config.json
+    {
+      "database": {
+        "dsn": "postgres://artex:yourpass@127.0.0.1:5432/artex?sslmode=disable"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Remote with TLS">
+    ```json config.json
+    {
+      "database": {
+        "dsn": "postgres://user:pass@db.example.com:5432/artex?sslmode=require"
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Environment variable override
+
+The environment variable `ARTEX_PG_DSN` takes the highest priority — it overrides both the `database.dsn` field and the assembled individual fields. This is the recommended approach for Docker deployments where injecting a config file is inconvenient.
+
+```bash
+export ARTEX_PG_DSN="postgres://artex:yourpass@127.0.0.1:5432/artex?sslmode=disable"
+./artex
+```
+
+**Precedence order (highest to lowest):**
+
+1. `ARTEX_PG_DSN` environment variable
+2. `database.dsn` field in `config.json`
+3. Assembled DSN from `host` / `port` / `user` / `password` / `dbname` / `sslmode` fields
+
+If none of the above produce a connection string, Artex exits immediately with an error naming the config path it inspected.
+
+<Note>
+  In the Docker Compose setup, the `ARTEX_PG_DSN` is assembled automatically
+  from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` in `.env`.
+  You do not need to set `ARTEX_PG_DSN` manually when using `docker compose up`.
+</Note>
+
+## Connection pool
+
+Artex uses a fixed-size connection pool managed by the `pgx` driver. Both `MaxOpenConns` and `MaxIdleConns` are set to **32**, meaning up to 32 connections may be open at once and idle connections are kept alive for reuse rather than closed. This value was chosen to stay well below PostgreSQL's default `max_connections = 100`, leaving headroom for manual `psql` sessions and admin tooling.
+
+```
+MaxOpenConns = 32
+MaxIdleConns = 32   (all idle connections are retained for reuse)
+```
+
+There are no user-configurable pool size settings — the value is a compile-time constant in `db/db.go`. If you need a smaller pool (shared PostgreSQL instance, low-resource host), rebuild from source after editing `maxOpenConns`.
+
+## Schema auto-migration
+
+Artex embeds `schema.sql` inside the binary using `go:embed` and re-runs it **on every startup**. The schema is fully idempotent: every statement uses `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, or `ADD COLUMN IF NOT EXISTS`, so re-running it on an existing database is safe and produces no changes if the schema is already up to date.
+
+This means **upgrading Artex is a restart** — drop the new binary in place, start it, and the schema migration runs automatically. No manual `psql` commands or migration scripts are needed.
+
+<Warning>
+  Although the migration is idempotent and non-destructive, Artex can add new
+  columns or indexes on startup. Always back up your database and the `./data`
+  directory before upgrading to a new release, so you can restore to the
+  previous state if something goes wrong.
+</Warning>
+
+### Recommended backup before upgrades
+
+```bash
+# Dump the full database
+pg_dump -h 127.0.0.1 -p 5432 -U artex artex > artex-backup-$(date +%Y%m%d).sql
+
+# Also back up jwt.key and any other runtime data
+cp -r ./data ./data.bak
+```
+
+To restore from the dump if needed:
+
+```bash
+psql -h 127.0.0.1 -p 5432 -U artex artex < artex-backup-20240101.sql
+```

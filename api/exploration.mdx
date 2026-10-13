@@ -1,0 +1,309 @@
+---
+title: "Artex Exploration API: Findings, Intents & Workspace"
+sidebarTitle: "Exploration API"
+description: "Reference for findings lifecycle, lineage, retests, deepening, frontier intents, activity stream, worker intent control, and workspace file management."
+---
+
+The Exploration API surfaces everything the autonomous agent system discovers and does during a pentest. Findings are the primary output; intents (worker goals) are the work items in flight; the workspace is the shared filesystem agents read and write during execution.
+
+---
+
+## Findings
+
+Findings are vulnerability records produced by worker agents via the `report_finding` tool. Each finding is persisted independently of the exploration graph, so records survive task deletion.
+
+### GET /api/exploration/findings
+
+List findings. Without pagination parameters this returns up to 500 findings as a bare array (suitable for dashboard summaries). With `?page` and `?limit` it returns a paginated envelope.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `task` | string | Filter to findings from a specific task ID. Without this parameter results come from the standalone findings table. |
+| `severity` | string | `critical` \| `high` \| `medium` \| `low` |
+| `status` | string | `pending` \| `confirmed` \| `false_positive` \| `fixed` \| `ignored` \| `duplicate` \| `risk_accepted` |
+| `vulnclass` | string | Filter by vulnerability class string. |
+| `q` | string | Full-text search over name, summary, and evidence. |
+| `sort` | string | Sort column (e.g., `severity`, `ts`). |
+| `page` | integer | Page number (1-based). Enables paginated response envelope. |
+| `limit` | integer | Page size (max 200). |
+
+**Paginated response envelope**
+
+<ResponseField name="items" type="array">Array of `FindingDTO` objects.</ResponseField>
+<ResponseField name="total" type="integer">Total matching findings across all pages.</ResponseField>
+<ResponseField name="page" type="integer">Current page number.</ResponseField>
+<ResponseField name="page_size" type="integer">Requested page size.</ResponseField>
+
+**FindingDTO fields**
+
+<ResponseField name="id" type="string">Exploration node ID (for task-scoped views).</ResponseField>
+<ResponseField name="finding_id" type="string">Standalone findings-table ID — use this for status updates and retests.</ResponseField>
+<ResponseField name="vulnclass" type="string">Vulnerability class (e.g., `sqli`, `xss`, `rce`).</ResponseField>
+<ResponseField name="name" type="string">Optional display name; falls back to `vulnclass` when empty.</ResponseField>
+<ResponseField name="severity" type="string">`critical` | `high` | `medium` | `low`</ResponseField>
+<ResponseField name="status" type="string">Triage status. Default is `pending`.</ResponseField>
+<ResponseField name="summary" type="string">One-line finding description.</ResponseField>
+<ResponseField name="evidence" type="string">Detailed evidence JSON (proof of concept, steps to reproduce).</ResponseField>
+<ResponseField name="report" type="string">Full Markdown report — only populated on the detail endpoint, empty on list.</ResponseField>
+<ResponseField name="assets" type="array">Assets anchored to this finding (`id`, `type`, `label`).</ResponseField>
+<ResponseField name="task_id" type="string">ID of the originating task.</ResponseField>
+<ResponseField name="ts" type="string">RFC 3339 discovery timestamp.</ResponseField>
+<ResponseField name="traffic_count" type="integer">Number of HTTP traffic records bound to this finding.</ResponseField>
+
+---
+
+### GET /api/exploration/findings/stats
+
+Aggregate counts used by the findings dashboard stat cards and vulnerability-class filter.
+
+```bash
+curl "http://localhost:8787/api/exploration/findings/stats" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/exploration/findings/{id}
+
+Fetch a single finding by its `finding_id`. Includes the full `report` Markdown field.
+
+Accepts an optional `?context_task=<taskID>` to resolve provenance within a specific task (enables the inherited/source-task attribution).
+
+---
+
+### PATCH /api/exploration/findings/{id}
+
+Update a finding's triage metadata. Any combination of fields may be patched.
+
+<ParamField body="status" type="string">
+  New triage status. One of: `pending`, `in_progress`, `confirmed`, `resolved`, `fixed`, `false_positive`, `ignored`, `duplicate`, `risk_accepted`.
+</ParamField>
+
+<ParamField body="severity" type="string">
+  `critical` | `high` | `medium` | `low`
+</ParamField>
+
+<ParamField body="name" type="string">
+  Override the finding's display name.
+</ParamField>
+
+<ParamField body="vulnclass" type="string">
+  Override the vulnerability class string.
+</ParamField>
+
+---
+
+### DELETE /api/exploration/findings/{id}
+
+Permanently delete a finding record and its originating exploration node.
+
+---
+
+### GET /api/exploration/findings/{id}/lineage
+
+Return the exploration sub-DAG from the task root down to this finding — the finding node plus all ancestor nodes and edges, suitable for rendering the "how this was found" provenance graph.
+
+<ResponseField name="nodes" type="array">Array of `TaskNodeDTO` objects (facts, intents, finding).</ResponseField>
+<ResponseField name="edges" type="array">Array of `{src, dst, rel}` edge objects.</ResponseField>
+
+---
+
+### POST /api/exploration/findings/{id}/deepen
+
+Launch a deeper autonomous investigation into this finding. Artex spawns a new worker intent specifically targeting this finding's context.
+
+---
+
+### GET /api/exploration/findings/export
+
+Export findings to a file. Returns the file as a download.
+
+**Query parameters**
+
+| Parameter | Description |
+|-----------|-------------|
+| `scope` | `filtered` (default), `all`, or `selected` |
+| `format` | `md-single`, `md-zip`, `csv`, or `json` |
+| `ids` | Comma-separated finding IDs (required when `scope=selected`) |
+| `severity`, `status`, `q`, etc. | Same filters as the list endpoint (used when `scope=filtered`) |
+
+---
+
+### GET /api/exploration/findings/asset-tree
+
+Return findings grouped and nested by their anchored asset tree — used by the asset-oriented findings view.
+
+---
+
+### GET /api/exploration/findings/groups
+
+Return findings grouped by vulnerability class with aggregate severity counts.
+
+---
+
+## Finding Retests
+
+Retests let you re-verify a finding with the current agent configuration.
+
+### GET /api/exploration/findings/{id}/retests
+
+List all retest runs for a specific finding.
+
+<ResponseField name="id" type="string">Retest record ID.</ResponseField>
+<ResponseField name="status" type="string">`running` | `done` | `failed`</ResponseField>
+<ResponseField name="created_at" type="string">RFC 3339 start time.</ResponseField>
+
+### GET /api/exploration/findings/retests/active
+
+List all currently in-progress retest runs across all findings.
+
+### POST /api/exploration/findings/{id}/retests
+
+Launch a new retest for the finding identified by `{id}` (the `finding_id`).
+
+---
+
+## Finding Traffic & Evidence
+
+Traffic records link HTTP requests/responses captured during testing to findings.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/exploration/findings/{id}/traffic` | List traffic records bound to this finding |
+| `GET` | `/api/exploration/findings/{id}/traffic/{tid}` | Get full request/response detail |
+| `POST` | `/api/exploration/findings/{id}/traffic` | Bind a traffic record to a finding |
+| `DELETE` | `/api/exploration/findings/{id}/traffic/{tid}` | Unbind traffic from a finding |
+
+---
+
+## Frontier & Intents
+
+### GET /api/exploration/frontier
+
+Return the open (unclaimed) exploration intents for the active or specified task.
+
+**Query parameters:** `?task=<id>` (optional), `?limit=<n>` (default 100).
+
+Returns an array of `TaskNodeDTO` objects with `type: "intent"` and `state: "open"`.
+
+---
+
+### GET /api/exploration/intents
+
+Return all intents for a task, newest first. Supports pagination with `?before=<id>` and `?limit=<n>`.
+
+Without pagination parameters returns a bare array. With `?before` or `?page`, returns `{items, has_more}`.
+
+---
+
+### GET /api/exploration/graph
+
+Return the complete exploration graph (all node types + edges) for a task as `{nodes, edges}`.
+
+---
+
+### GET /api/exploration/nodes
+
+Return a filterable, paginated view of exploration nodes (the 播报板 broadcast board).
+
+**Query parameters**
+
+| Parameter | Description |
+|-----------|-------------|
+| `task` | Task ID (required) |
+| `kind` | Comma-separated node kinds to filter (`intent`, `fact`, `finding`) |
+| `state` | Comma-separated states to filter |
+| `q` | Payload substring search |
+| `order` | `desc` (default) or `asc` |
+| `page`, `size` | Pagination |
+
+**Response**
+
+<ResponseField name="items" type="array">Page of `TaskNodeDTO` objects.</ResponseField>
+<ResponseField name="total" type="integer">Total matching nodes.</ResponseField>
+<ResponseField name="edges" type="array">Edges touching nodes on this page.</ResponseField>
+<ResponseField name="refs" type="object">Neighbour nodes referenced by edges but not on this page (keyed by ID string).</ResponseField>
+<ResponseField name="assets" type="object">Anchored assets for nodes on this page (keyed by node ID string).</ResponseField>
+
+---
+
+## Activity
+
+### GET /api/exploration/activity
+
+Return the worker execution step log for a task. Incremental via `?since=<seq>`.
+
+**Query parameters:** `?task=<id>`, `?since=<seq>` (default 0), `?limit=<n>` (default 300), `?intent=<id>` (narrow to one session).
+
+<ResponseField name="items" type="array">Array of `ActivityDTO` objects.</ResponseField>
+<ResponseField name="cursor" type="integer">Use as `since` on the next poll to get only new items.</ResponseField>
+
+### GET /api/exploration/activity/history
+
+Reverse-paginated session history (scroll-up to load older items).
+
+| Parameter | Description |
+|-----------|-------------|
+| `task` | Task ID |
+| `session` | `main` (current main-agent segment), `main:<N>` (specific segment), `plan`, or `intent:<nodeID>` |
+| `before` | Scroll cursor — load items older than this activity ID |
+| `limit` | Page size |
+
+### GET /api/exploration/activity/stream
+
+SSE stream of live activity events for a task. Accepts `?task=<id>&since=<seq>&token=<jwt>`.
+
+### GET /api/exploration/activity/{seq}
+
+Fetch a single activity detail record by its sequence number (includes full `detail` field).
+
+---
+
+## Workspace
+
+The workspace is the shared filesystem that agents read and write during task execution. Files are browsable and editable from the API.
+
+### GET /api/workspace/list
+
+List files and directories at a path.
+
+<ParamField query="path" type="string">Workspace-relative directory path. Defaults to root.</ParamField>
+
+### GET /api/workspace/read
+
+Read a file's contents.
+
+<ParamField query="path" type="string" required>Workspace-relative file path.</ParamField>
+
+### POST /api/workspace/write
+
+Write or overwrite a file.
+
+<ParamField body="path" type="string" required>Workspace-relative destination path.</ParamField>
+<ParamField body="content" type="string" required>File content as a string.</ParamField>
+
+### POST /api/workspace/mkdir
+
+Create a directory.
+
+<ParamField body="path" type="string" required>Directory path to create (including parents).</ParamField>
+
+### DELETE /api/workspace/delete
+
+Delete a file or directory.
+
+<ParamField query="path" type="string" required>Path to delete.</ParamField>
+
+### GET /api/workspace/download
+
+Download a file as an attachment.
+
+<ParamField query="path" type="string" required>File path to download.</ParamField>
+
+### POST /api/workspace/upload
+
+Upload a file to the workspace.
+
+Accepts `multipart/form-data` with a `file` field and an optional `path` form field specifying the destination directory.

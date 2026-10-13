@@ -1,0 +1,155 @@
+---
+title: "Deploy Artex with Docker Compose and a PostgreSQL Database"
+sidebarTitle: "Docker"
+description: "Run Artex and PostgreSQL via Docker Compose. Covers the community image, .env variables, volumes, first-run setup, and source builds with mirror overrides."
+---
+
+Docker Compose is the quickest way to get Artex running because it bundles the application container and a PostgreSQL database into a single managed stack. The community-maintained image `mianhuatang11/artex` is pulled automatically — the original `autumn27/artex` image has been removed from Docker Hub. If the image is unavailable or you want to build from your own source changes, you can build locally with no external precompiled dependencies.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Docker & Docker Compose" icon="docker">
+    Docker Engine with the Compose plugin. Run `./install.sh` to auto-install on Linux if Docker is not already present.
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    Included in the Compose stack as `postgres:16-alpine`. No separate installation is required.
+  </Card>
+</CardGroup>
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/mhtsec/ARTEX.git
+    cd ARTEX
+    ```
+  </Step>
+
+  <Step title="Create your environment file">
+    Copy the example file and set a database password. LLM API keys can be filled in now or later through the UI.
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Open `.env` in your editor and review each variable:
+
+    | Variable | Default | Required | Description |
+    |---|---|---|---|
+    | `ARTEX_TAG` | `latest` | No | Image tag to pull, e.g. `v0.3.3` |
+    | `POSTGRES_USER` | `artex` | No | PostgreSQL username |
+    | `POSTGRES_PASSWORD` | *(none)* | **Yes** | Database password — must be set |
+    | `POSTGRES_DB` | `artex` | No | Database name |
+    | `ANTHROPIC_API_KEY` | *(empty)* | No | Anthropic API key for Claude models |
+    | `OPENAI_API_KEY` | *(empty)* | No | OpenAI-compatible API key |
+    | `ARTEX_LLM_PROVIDER` | *(empty)* | No | Override LLM provider |
+    | `ARTEX_LLM_MODEL` | *(empty)* | No | Override model name |
+    | `ARTEX_LLM_BASE_URL` | *(empty)* | No | Custom base URL for OpenAI-compatible endpoints |
+    | `ARTEX_LLM_PROXY` | *(empty)* | No | HTTP proxy for LLM requests |
+
+    <Warning>
+      `POSTGRES_PASSWORD` is required. The stack refuses to start if it is not set. The `.env.example` placeholder value `change-me-please` is intentionally weak — replace it before starting.
+    </Warning>
+  </Step>
+
+  <Step title="Start the stack">
+    ```bash
+    docker compose up -d
+    ```
+
+    Docker pulls the Artex image and the PostgreSQL image, waits for the database health-check to pass, then starts the Artex container.
+  </Step>
+
+  <Step title="Complete first-run setup">
+    Open your browser and navigate to the setup wizard. You will be prompted to create an administrator account.
+
+    ```
+    http://localhost:8787/setup
+    ```
+
+    After setting your password you are redirected to the main dashboard.
+  </Step>
+</Steps>
+
+## Persistent Volumes
+
+The Compose file declares three storage locations that survive container rebuilds:
+
+| Mount | Type | Contents |
+|---|---|---|
+| `pgdata` | Named volume | All PostgreSQL data — tasks, assets, findings, users |
+| `./data` | Bind mount | `jwt.key`, SQLite state, and other runtime files |
+| `./skills` | Bind mount | Skill packages; changes here take effect without rebuilding the image |
+
+<Note>
+  The `./skills` bind mount **shadows** the skills bundled inside the image. To restore the built-in skills, remove the `./skills` directory from the host and restart the stack.
+</Note>
+
+## Building from Source
+
+If you cannot pull the image or want to test local code changes, build directly from the repository. The Dockerfile performs a **three-stage build**:
+
+1. **Frontend export** — Node 20 runs `npm ci` and `npm run build:static`, producing a static Next.js output in `web/out/`.
+2. **Go compile** — The static frontend is copied into `server/webui/dist/`, then `CGO_ENABLED=0 go build -tags embedui` produces a single fully-static binary with the frontend embedded.
+3. **Runtime image** — The binary and `start.sh` are copied into a `python:3.12-slim-bookworm` base that also contains the following tools pre-installed:
+
+<CardGroup cols={2}>
+  <Card title="Network & Recon" icon="network-wired">
+    `nmap`, `curl`, `wget`, `dnsutils`, `iputils-ping`, `netcat-openbsd`, `whois`
+  </Card>
+  <Card title="General Utilities" icon="wrench">
+    `ripgrep`, `vim`, `git`, `jq`, `unzip`, `inetutils-telnet`
+  </Card>
+  <Card title="Scripting Runtime" icon="code">
+    Node.js 20.x, npm, Playwright MCP + CLI (Chromium pre-installed)
+  </Card>
+  <Card title="Language Runtime" icon="terminal">
+    Python 3.12 (base image), Go compiler is build-stage only and not present at runtime
+  </Card>
+</CardGroup>
+
+```bash
+docker compose build && docker compose up -d
+```
+
+### Mirror Overrides
+
+For networks with restricted access to the default registries, pass build arguments to substitute mirror URLs:
+
+```bash
+docker compose build \
+  --build-arg GOPROXY=https://goproxy.cn,direct \
+  --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+```
+
+Both build arguments are accepted at the top of the Dockerfile. The defaults are already set to mirror-friendly values, so these overrides are only needed if you want to point to a different mirror.
+
+## Benchmark Compose File
+
+A separate `docker-compose.bench.yml` file is provided for running Artex against the Tencent TSec benchmark suite. It uses `network_mode: host` so the container can reach target machines on the host network directly. It is independent of the main production stack and uses its own environment file at `bench/.env`.
+
+```bash
+# Build and run the benchmark image (foreground)
+docker compose -f docker-compose.bench.yml up --build
+
+# Stop and clean up
+docker compose -f docker-compose.bench.yml down
+```
+
+## Useful Commands
+
+```bash
+# Follow Artex logs
+docker compose logs -f artex
+
+# Restart only Artex (without touching PostgreSQL)
+docker compose restart artex
+
+# Stop the whole stack
+docker compose down
+
+# Stop and delete all data volumes (destructive)
+docker compose down -v
+```

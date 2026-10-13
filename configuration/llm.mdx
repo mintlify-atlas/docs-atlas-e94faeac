@@ -1,0 +1,206 @@
+---
+title: "Configuring LLM Providers and Profiles in Artex"
+sidebarTitle: "LLM Setup"
+description: "Configure Artex's LLM backend with Anthropic or OpenAI-compatible providers. Covers environment variables, named profiles, per-agent bindings, the retry policy, and per-task overrides."
+---
+
+Artex's multi-agent system — planner, workers, goals agent, and main agent — all require an LLM provider to operate. You can supply credentials through environment variables before startup, configure everything through the dashboard's LLM Profiles page without touching files, or mix both approaches. The engine stays idle until at least one profile is configured and activated.
+
+## Environment variables
+
+Setting environment variables is the fastest way to get Artex running. On startup, if no active profile exists in the database, Artex reads these variables and creates an initial configuration automatically.
+
+<ParamField body="ANTHROPIC_API_KEY" type="string">
+  API key for the Anthropic provider. When set and `ARTEX_LLM_PROVIDER` is
+  absent or set to `anthropic`, this key is used automatically. Artex will
+  select `claude-3-5-sonnet` as the default model unless overridden by
+  `ARTEX_LLM_MODEL`.
+</ParamField>
+
+<ParamField body="OPENAI_API_KEY" type="string">
+  API key for the OpenAI provider (or any OpenAI-compatible endpoint). When set
+  and `ARTEX_LLM_PROVIDER` is absent or set to `openai`, this key is used
+  automatically.
+</ParamField>
+
+<ParamField body="ARTEX_LLM_PROVIDER" type="string">
+  Explicitly selects the provider format. Accepted values: `anthropic`,
+  `openai`, `openai-responses`. When omitted, Artex infers the provider from
+  whichever API key is set — Anthropic takes precedence if both are present.
+</ParamField>
+
+<ParamField body="ARTEX_LLM_MODEL" type="string">
+  Model identifier to use, e.g. `claude-sonnet-4-5` or `gpt-4o`. When omitted,
+  a per-provider default is applied. Always set this explicitly in production to
+  avoid unintended model changes after updates.
+</ParamField>
+
+<ParamField body="ARTEX_LLM_BASE_URL" type="string">
+  Custom endpoint URL for OpenAI-compatible APIs (e.g. DeepSeek, local Ollama,
+  Azure OpenAI). Leave empty to use the provider's official endpoint. See
+  [Custom endpoints](#custom-and-compatible-endpoints) below.
+</ParamField>
+
+<ParamField body="ARTEX_LLM_PROXY" type="string">
+  HTTP, HTTPS, or SOCKS5 proxy URL for all outbound LLM requests. Useful when
+  the host running Artex cannot reach the LLM API directly, e.g.
+  `http://proxy.internal:8080` or `socks5://user:pass@proxy:1080`.
+</ParamField>
+
+### Quick-start example
+
+<Tabs>
+  <Tab title="Anthropic">
+    ```bash .env
+    ANTHROPIC_API_KEY=sk-ant-...
+    ARTEX_LLM_MODEL=claude-sonnet-4-5
+    ```
+  </Tab>
+  <Tab title="OpenAI">
+    ```bash .env
+    OPENAI_API_KEY=sk-...
+    ARTEX_LLM_PROVIDER=openai
+    ARTEX_LLM_MODEL=gpt-4o
+    ```
+  </Tab>
+  <Tab title="DeepSeek (custom base URL)">
+    ```bash .env
+    OPENAI_API_KEY=sk-deepseek-...
+    ARTEX_LLM_PROVIDER=openai
+    ARTEX_LLM_MODEL=deepseek-chat
+    ARTEX_LLM_BASE_URL=https://api.deepseek.com
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Environment variables seed the database only when no active profile is already
+  present. Once you save a profile through the UI, the database configuration
+  takes precedence over environment variables on subsequent restarts.
+</Note>
+
+## LLM Profiles (dashboard)
+
+The **LLM Profiles** page at **System → LLM Config** (`/system/llm`) provides a full GUI for managing provider configurations without editing files or environment variables. Profiles are stored in the `llm_profiles` table and survive restarts.
+
+<CardGroup cols={2}>
+  <Card title="Named profiles" icon="tag">
+    Each profile has a human-readable name (e.g. `claude-production`,
+    `deepseek-test`), a provider format, a model, and optional rate limits.
+    You can create as many profiles as you need.
+  </Card>
+  <Card title="Global activation" icon="circle-check">
+    Exactly one profile can be marked as the globally active configuration.
+    All agents fall back to this profile unless overridden by a per-agent
+    binding or a per-task chain.
+  </Card>
+  <Card title="Per-agent binding" icon="link">
+    Any agent (planner, worker, custom agents) can be bound to a specific
+    profile. Bound agents always use their assigned profile, ignoring the
+    globally active one.
+  </Card>
+  <Card title="Hot reload" icon="rotate">
+    Saving or activating a profile takes effect immediately — no restart
+    required. Running tasks pick up the new configuration on their very next
+    LLM call.
+  </Card>
+</CardGroup>
+
+### Profile fields
+
+Each profile stores these settings, all configurable through the form in the dashboard:
+
+| Field | Description |
+|---|---|
+| **Name** | Unique label for this configuration |
+| **Format** | `anthropic`, `openai`, or `openai-responses` |
+| **Model** | Model identifier string |
+| **API Key** | Credential (stored encrypted; never returned to the browser) |
+| **Base URL** | Custom endpoint (optional; OpenAI-compatible only) |
+| **Proxy** | Outbound proxy URL (optional) |
+| **Rate limits** | Requests per second / per minute caps |
+| **Context window** | Override context window size (in K tokens) |
+| **Streaming** | Toggle streaming vs. non-streaming mode |
+| **Thinking / Reasoning** | `thinking_type` and `reasoning_effort` for extended thinking models |
+| **Max tokens** | Per-reply output cap |
+
+## LLM pool and retry policy
+
+When multiple profiles exist, Artex can operate in **pool mode**: if the active profile returns rate-limit or quota errors, Artex automatically fails over to the next available profile in priority order. The pool is configured under **System → LLM Config → Pool & Retry**.
+
+The retry policy has three independent layers:
+
+<Accordion title="Connect retry">
+  Retries a failed connection attempt before declaring the call failed.
+  Configurable attempts and interval per profile, or globally.
+</Accordion>
+
+<Accordion title="Empty-response retry">
+  Retries when the model returns an empty or zero-token response. Defaults
+  to 2 attempts with a 3 s interval.
+</Accordion>
+
+<Accordion title="Stream retry">
+  Retries when a streaming response is interrupted mid-stream. Separate
+  attempt count and interval from the connect retry.
+</Accordion>
+
+Each profile can override the global retry settings. A zero value means "inherit from the global policy." The pool circuit-breaker state (`GET /api/llm/pool`) persists across profile edits — health knowledge about which backends are over-quota is not erased when you save an unrelated profile.
+
+## Per-task LLM override
+
+Tasks run on the globally active profile by default. You can pin one or more profiles to a specific task to create an ordered failover chain scoped to that task only.
+
+```http
+PUT /api/tasks/{id}/llm
+Content-Type: application/json
+
+{
+  "llm_profile_ids": [3, 7],
+  "active_llm_profile_id": 3
+}
+```
+
+The first profile in `llm_profile_ids` is active; if it fails or is exhausted, the engine promotes the next one. Profiles can be swapped at any time — even for running or completed tasks — and the change takes effect on the very next LLM call. To inspect which profile a task is currently using, call `GET /api/tasks/{id}/llm/resolution`.
+
+<Tip>
+  Use per-task chains to experiment with different models on individual tasks
+  without touching the globally active profile. This lets you compare results
+  between providers side by side.
+</Tip>
+
+## Custom and compatible endpoints
+
+Any service that speaks the OpenAI chat completions API format works with Artex by setting `ARTEX_LLM_PROVIDER=openai` and pointing `ARTEX_LLM_BASE_URL` at the custom endpoint. This includes self-hosted models (Ollama, vLLM, LM Studio), third-party providers (DeepSeek, Groq, Together AI), and Azure OpenAI.
+
+```bash
+# DeepSeek via OpenAI-compatible API
+OPENAI_API_KEY=sk-deepseek-xxxx
+ARTEX_LLM_PROVIDER=openai
+ARTEX_LLM_MODEL=deepseek-chat
+ARTEX_LLM_BASE_URL=https://api.deepseek.com
+
+# Local Ollama
+OPENAI_API_KEY=ollama         # any non-empty string
+ARTEX_LLM_PROVIDER=openai
+ARTEX_LLM_MODEL=llama3.2
+ARTEX_LLM_BASE_URL=http://localhost:11434/v1
+```
+
+<Warning>
+  Some compatible endpoints do not implement the full OpenAI specification.
+  Features such as streaming, function/tool calling, and extended thinking
+  params may behave differently or be unsupported. Use the **Test Connection**
+  button in the LLM Profile form to verify a working call before running tasks.
+</Warning>
+
+## Worker concurrency
+
+Each task runs a planner and up to N worker agents concurrently. The default is **3 workers per task**, configurable in **System → Settings** under the "Worker Agents" section. The setting is stored in the database and takes effect for all subsequently started tasks.
+
+```
+Default concurrent workers per task: 3
+Minimum: 1
+```
+
+Increasing the worker count can improve exploration throughput on fast LLM providers but will proportionally increase token consumption and may hit rate limits sooner. There is a separate global task concurrency cap (how many tasks run simultaneously) also configurable in System Settings.

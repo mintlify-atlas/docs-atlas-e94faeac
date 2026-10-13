@@ -1,0 +1,174 @@
+---
+title: "Upgrade Artex: UI, Scripts, Docker, and Manual Methods"
+sidebarTitle: "Updates"
+description: "Every Artex upgrade path: one-click UI, update.sh, Docker pull, binary swap, source rebuild — with SHA256 checks, smoke tests, and automatic rollback."
+---
+
+Artex supports several upgrade paths ranging from a fully automated one-click update in the web UI to manual binary replacement. All methods share the same safety guarantee: your data is never touched during an upgrade. The PostgreSQL volume (`pgdata`), the `./data` directory (containing `jwt.key` and SQLite state), and the `./skills` directory are preserved across every update method. Database schema changes are applied automatically on the next startup — no manual migration commands are required.
+
+<Warning>
+  **Updates restart the server.** Any tasks running at the time of the update will be interrupted. Schedule updates when the system is idle.
+</Warning>
+
+## Method 1 — One-Click Update from the UI (Recommended)
+
+The simplest upgrade path requires no terminal access. Open **System Settings** (sidebar → `/system/settings`) and locate the **Version & Updates** card.
+
+<Steps>
+  <Step title="Check for a new version">
+    Click **Check for Updates**. Artex queries the GitHub releases API and displays the latest available version alongside your current one.
+  </Step>
+
+  <Step title="Start the update">
+    Click **Update**. Artex downloads the release archive for the current platform, verifies its SHA256 checksum against the `SHA256SUMS` file published with the release, and runs a smoke test (`artex -h`) on the new binary before staging it as `artex.new`.
+  </Step>
+
+  <Step title="Automatic restart and swap">
+    After the smoke test passes, the running process exits with code `75`. The `start.sh` daemon wrapper sees this exit code, relaunches, and the binary performs the swap on startup. The previous binary is preserved as `artex.old`.
+  </Step>
+
+  <Step title="Wait for the new version to come online">
+    The browser automatically polls until the server responds, then refreshes the page. The Version card confirms the new version number.
+  </Step>
+</Steps>
+
+## Safety Features
+
+<CardGroup cols={2}>
+  <Card title="SHA256 Verification" icon="shield-check">
+    The downloaded archive is checked against the `SHA256SUMS` file from the same release before anything is written to disk. A mismatch discards the download and keeps the current version running.
+  </Card>
+  <Card title="Smoke Test" icon="flask">
+    The new binary is executed with `artex -h` before staging. If it exits with an error or non-zero code, the staged file is discarded and the current version continues running.
+  </Card>
+  <Card title="Automatic Rollback" icon="rotate-left">
+    If the newly installed binary fails to start **three consecutive times**, Artex automatically rolls back to `artex.old`. The failed binary is saved as `artex.failed` for post-mortem inspection.
+  </Card>
+  <Card title="Manual Rollback" icon="hand">
+    The Version & Updates card always shows a **Roll back to previous version** button as long as `artex.old` exists. Note that database schema changes are **not** rolled back.
+  </Card>
+</CardGroup>
+
+<Note>
+  **Development builds are protected from updates.** If the running binary's version string is `dev` or contains a `git describe` suffix (e.g. `0.3.3-5-gabcdef`), the update UI disables the update button. This prevents accidentally overwriting a debug build with a release binary.
+</Note>
+
+## Method 2 — update.sh Script
+
+`update.sh` provides an interactive terminal workflow that mirrors the options in `install.sh`. Run it from the repository root:
+
+```bash
+cd ARTEX
+./update.sh
+```
+
+The script first offers to run `git pull --ff-only` to sync the repository, then presents two options:
+
+<Tabs>
+  <Tab title="① Docker Update">
+    Pulls the latest (or a specified) image tag and recreates the Artex container. PostgreSQL is left untouched.
+
+    ```text
+    1) Docker update (pull new image and restart)
+    ```
+
+    You can specify a target tag (e.g. `v0.3.3`) or press Enter to use the value of `ARTEX_TAG` from `.env` (defaults to `latest`). The script then runs:
+
+    ```bash
+    docker compose pull artex
+    docker compose up -d artex
+    ```
+
+    The new container starts, Artex applies any schema changes on boot, and the service is live.
+  </Tab>
+  <Tab title="② Local Compile Update">
+    Rebuilds the frontend and recompiles the binary in place. After compilation, restart the running process manually to apply the update.
+
+    ```text
+    2) Local update (recompile from source)
+    ```
+
+    ```bash
+    # Equivalent steps performed by update.sh
+    cd web && npm ci && npm run build:static && cd ..
+    cp -r web/out server/webui/dist
+    CGO_ENABLED=0 go build -tags embedui -trimpath -o artex ./cmd/artex
+    ```
+  </Tab>
+</Tabs>
+
+## Method 3 — Docker Compose (Manual)
+
+For full control over which image version is deployed:
+
+```bash
+cd ARTEX
+
+# Optional: set a specific version in .env
+# ARTEX_TAG=v0.3.3
+
+docker compose pull artex
+docker compose up -d artex
+
+# Optional: remove the old image layer to free disk space
+docker image prune -f
+```
+
+<Note>
+  The **one-click UI update inside Docker** replaces only the binary inside the running container — not the full image. Tools bundled in the image (such as `nmap`, Playwright, and the system packages) are **not** upgraded by in-container binary replacement. To upgrade those tools, pull a new image with `docker compose pull artex && docker compose up -d artex`.
+</Note>
+
+## Method 4 — Binary Replacement (Manual)
+
+Download the new release archive from the upstream releases page, stop the running process, then swap the files:
+
+```bash
+# Stop the background process
+pkill -f start.sh
+
+# Replace the binary and skills directory
+cp -r <extracted-dir>/skills ./
+cp <extracted-dir>/artex ./
+
+# Restart
+./start.sh
+```
+
+Keep your `config.json` and `data/` directory — they are not included in the release archive and should not be replaced.
+
+<Warning>
+  Release archives are hosted on the original upstream repository at `https://github.com/Autumn-27/ARTEX/releases`. The mirror repository (`mhtsec/ARTEX`) does not publish binaries.
+</Warning>
+
+## Method 5 — Rebuild from Source
+
+Pull the latest code, rebuild the frontend, recompile the binary, and restart:
+
+```bash
+git pull
+
+# Rebuild frontend
+cd web && npm ci && npm run build:static && cd ..
+cp -r web/out server/webui/dist
+
+# Recompile
+CGO_ENABLED=0 go build -tags embedui -trimpath -o artex ./cmd/artex
+
+# Restart (send SIGTERM to the running start.sh, then relaunch)
+./start.sh
+```
+
+## Schema Migrations
+
+Artex embeds `schema.sql` directly in the binary and re-executes it on every startup. All statements are written to be idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`), so re-running the file on an existing database is safe and applies any new columns or indexes from the new version without requiring manual intervention. This is what the documentation means when it says "restart = migrate."
+
+<Accordion title="What is preserved across updates?">
+  | Location | Contents | Preserved? |
+  |---|---|---|
+  | `pgdata` volume | All PostgreSQL data | ✅ Always |
+  | `./data/` | `jwt.key`, SQLite, runtime state | ✅ Always |
+  | `./skills/` | Skill packages | ✅ Always |
+  | `artex.old` | Previous binary | ✅ Until next update overwrites it |
+  | `config.json` | Database connection config | ✅ Not touched by any update method |
+  | `artex.failed` | Failed binary (if rollback occurred) | ✅ Kept for inspection |
+</Accordion>

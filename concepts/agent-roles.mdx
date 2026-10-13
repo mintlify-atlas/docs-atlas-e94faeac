@@ -1,0 +1,150 @@
+---
+title: "Agent Roles: Goals, Planner, Worker, and Main Agent"
+sidebarTitle: "Agent Roles"
+description: "Learn how Artex's four LLM agent roles divide the work of target decomposition, intent planning, tool execution, and human-in-the-loop steering."
+---
+
+Artex uses four distinct agent roles, each with a clearly bounded job. Keeping the roles separate is what makes the system scalable: multiple workers can run concurrently without interfering with each other, the planner can assess the full situation without executing any tools itself, and the operator can interact with a running task without interrupting the agents doing the work. Every role is backed by the norma SDK's `agentcore` session loop, but each is given a different system prompt, a different tool set, and different write permissions on the dual graph.
+
+## Goals Agent
+
+The goals agent runs once at task creation time, before any planning or execution begins. Its job is twofold: extract operational constraints from the task description, and decompose the high-level target into discrete, independently-verifiable objectives.
+
+**What it does:**
+
+1. Reads the task's goal text and optional description.
+2. Identifies any operational constraints explicitly stated in the description — things the operator has said are allowed or forbidden — and writes them to `task_constraints` via `set_constraints`.
+3. Breaks the overall objective into individual goal nodes with `set_goals`, each representing a concrete, testable outcome (a confirmed vulnerability class, a specific flag, a privilege level). Importantly, it does not emit attack steps or reconnaissance actions — only final deliverables.
+4. If an explicit asset scope is mentioned (a URL, subdomain, IP, or CIDR), it registers that scope via `add_task_scope` so the coverage denominator is correct from the start.
+
+<Note>
+The goals agent uses the same `set_goals` and `set_constraints` tools that the main agent uses at runtime. Any prompt customization you apply to those tools in Agent Management affects both the initial decomposition and any runtime additions made through chat.
+</Note>
+
+The constraint text written by the goals agent is injected verbatim into the system prompts of the planner and every worker, forming the non-negotiable operational boundary for the entire task. The constraint text must be self-contained — the goals agent is instructed to replace pronouns like "the current target" with the actual hostname or IP so constraints remain unambiguous when read in isolation later.
+
+## Planner
+
+The planner is the task's sole intent generator. It is event-driven: the engine wakes it up every time the exploration or asset graph changes (debounced to 800 ms), and also on a periodic heartbeat (default 10 minutes). Each wake-up is a fresh LLM session, but the planner carries two persistent data structures across wake-ups: the shared `todolist` and the pre-injected graph overview.
+
+**What it reads each round:**
+
+- A pre-injected snapshot of `graph_overview`: goals and their states, open and running intents, recent facts (with confidence levels), recent findings, hints from the operator, asset counts, and coverage metrics.
+- A `TriggerEvent` summary describing exactly what change fired this round — which worker just finished and what its conclusion was, or which finding was reported, or which new goals/hints the operator added. This lets the planner focus on the actual delta rather than re-scanning the entire state every round.
+- Its own persistent `todolist` from the previous round, if any.
+
+**What it decides each round:**
+
+- Whether any existing goal is now provable based on facts and findings already in the graph. If so, it calls `prove_goal` to mark it met. When the last goal is marked met, the task automatically moves to `done`.
+- Whether there are new exploration directions that are not already covered by open or running intents. If so, it calls `add_intent` (batch-mode preferred) to dispatch them into the frontier queue.
+- Whether any currently running worker appears to be off-track, in which case it can call `steer_work` to inject a course-correction message or `kill_work` to terminate the work and reclaim the intent slot.
+
+**The shared todolist for serial attack chains:**
+
+Real attack chains often have strict ordering dependencies — you cannot enumerate parameters before you know the endpoint, and you cannot attempt privilege escalation before you have credentials. If the planner dispatched all steps of such a chain in parallel, downstream workers would find their prerequisites missing and spin empty.
+
+The planner solves this with a persistent `TodoStore` keyed by exploration ID. The planner can record a multi-step chain as a structured todo list in one wake-up round. In subsequent rounds, it reads that list back (injected into its wake-up prompt as a block showing pending, in-progress, and completed steps) and dispatches only the steps whose prerequisites have been satisfied by facts now present in the graph. It marks steps completed as the corresponding facts appear. This allows complex attack chains to unfold correctly over multiple engine cycles without the planner needing to re-derive the full plan from scratch on every wake-up.
+
+```
+Round 1:  Planner records chain [find injection point → extract credentials → lateral move → escalate]
+          Dispatches: intent for "find injection point"
+
+Round 2:  Worker writes fact: "SQL injection confirmed at /api/login, blind time-based"
+          Planner reads todo, marks step 1 completed, dispatches: intent for "extract credentials"
+
+Round 3:  Worker writes fact: "retrieved admin hash: $2b$..."
+          Planner reads todo, marks step 2 completed, dispatches: intent for "lateral move"
+```
+
+## Worker
+
+Workers are the execution agents. Multiple workers run concurrently (configured in System Settings, default 3). Each worker claims exactly one intent from the frontier queue at a time, executes it fully using real tools, writes its findings back to both graphs, and stops. Workers never generate new exploration directions.
+
+**What a worker does with an intent:**
+
+1. Receives the intent's summary and the asset IDs it targets, pre-loaded with the assets' raw data from the asset graph.
+2. Reads the global exploration overview for situational awareness (awareness only — not to discover new directions).
+3. Executes the intent using any combination of Bash (Kali tooling through the recording proxy), WebFetch (routed through the same proxy for traffic capture), and graph read tools.
+4. Writes back discovered assets via `insert_assets` (to the global asset graph), exploration conclusions via `record_fact` (linked to the intent via a `yields` edge), and confirmed vulnerabilities via `report_finding`.
+5. Ends its session with a one-line plain-text summary of what it did and found.
+
+Workers follow a strict write discipline: a `record_fact` call should aggregate all observations from one intent into a single fact node (summary + detail), not one fact per attribute. A worker executing a fingerprinting intent writes one fact like "identified nginx 1.25 / Vue3 frontend / 200 OK / title = Admin Panel" rather than four separate facts for each observation.
+
+**Cross-worker process-level information exchange:**
+
+Because each worker runs in a fresh LLM session with no memory of sibling workers' sessions, the system provides three tools for accessing what other workers observed during their execution — including observations that were never written as formal facts:
+
+<Tabs>
+  <Tab title="search_all_worker_traces">
+    Search across the execution traces of all other workers in this task by keyword. Automatically excludes the calling worker's own steps. Returns matching step summaries (≤100 characters) with their `intent_id`.
+
+    ```json
+    // Call
+    { "q": "admin token", "limit": 20 }
+
+    // Returns
+    {
+      "query": "admin token",
+      "hits": [
+        { "intent_id": 12, "step_id": 847, "kind": "tool_result",
+          "summary": "Response contained Authorization: Bearer eyJ0eXAi..." }
+      ]
+    }
+    ```
+
+    Use this when you suspect a sibling worker encountered something relevant that was not written to a fact — an error message, an internal URL, a parameter value.
+  </Tab>
+  <Tab title="list_worker_traces">
+    List the index of all executed works in this task: `intent_id` + one-line summary + state. Includes `running`, `done`, `exhausted`, `blocked`, and `stopped` intents. Use this to discover which works exist before searching or drilling into them.
+
+    ```json
+    // Call
+    { "q": "auth", "limit": 50 }
+
+    // Returns
+    {
+      "works": [
+        { "intent_id": 12, "summary": "Test authentication bypass on /api/login", "state": "done" },
+        { "intent_id": 34, "summary": "Enumerate authenticated endpoints", "state": "running" }
+      ]
+    }
+    ```
+  </Tab>
+  <Tab title="get_worker_trace">
+    Retrieve the execution trace of a specific work in three modes: (①) pass only `intent_id` to get all step summaries; (②) add `q` to filter steps by keyword; (③) add `step_ids` to retrieve the full detail of up to 5 specific steps.
+
+    ```json
+    // Mode ③ — full detail for specific steps
+    { "intent_id": 12, "step_ids": [847, 848] }
+
+    // Returns
+    {
+      "intent_id": 12,
+      "steps": [
+        { "step_id": 847, "kind": "tool_result",
+          "detail": "HTTP/1.1 200 OK\nAuthorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGci..." }
+      ]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+The typical workflow is: call `search_all_worker_traces` to find a relevant hit, note its `intent_id` and `step_id`, then call `get_worker_trace` with those `step_ids` to retrieve the full content. This lets workers build on each other's observations without the overhead of writing every intermediate step as a formal graph node.
+
+## Main Agent (Human-in-the-Loop)
+
+The main agent is the interactive conversation interface between the operator and a running task. It shares the same dual-graph tool set as the planner and workers, but it runs on demand in response to messages sent through the Chat interface.
+
+The main agent can:
+
+- Query the current state of the task — goals, findings, facts, asset coverage, worker traces.
+- Add new goals (`set_goals`) or constraints (`set_constraints`) to a running task, which will trigger a fresh planning round.
+- Add strategic hints (`add_hint`) to the exploration graph that the planner will read on its next wake-up.
+- Dispatch new intents directly (`add_intent`) without going through a planning round.
+- Resume a task that has reached a terminal state by adding new goals (the `resumeTask` callback is wired only for the main agent).
+
+<Info>
+When the main agent adds goals or hints to a running task, it uses special `notifyGoal` and `notifyHint` callbacks that record a structured trigger event — "the operator added N goals: …" — so the planner's next round is explicitly told what changed and why it was woken up, rather than discovering the change itself by re-scanning the overview.
+</Info>
+
+The main agent's tool calls that modify the graph immediately notify the planner via the task's `Notify()` channel, just as a worker completing an intent would. This ensures that operator steering is integrated into the same event-driven loop as autonomous execution, without requiring any special handling in the engine.

@@ -1,0 +1,232 @@
+---
+title: "Vulnerability Findings: Lifecycle, Evidence, and Export"
+sidebarTitle: "Findings"
+description: "How Artex records, classifies, and manages vulnerability findings — from initial discovery through lineage tracing, traffic evidence, retesting, and bulk export."
+---
+
+When a worker agent confirms a vulnerability it calls `report_finding`, which writes a **finding node** into both the per-task Exploration Graph and a separate, task-independent findings table. Because findings live in their own table they survive task deletion, making them a durable record of everything Artex has confirmed across all campaigns.
+
+---
+
+## Finding Node Types in the Exploration Graph
+
+Inside the Exploration Graph, a finding is one specific node kind (`finding`) in the chain `goal → intent → fact → finding`. The node carries the full payload — name, severity, evidence, vuln class — but the canonical record lives in the standalone `findings` table. The two are linked by `finding_node_id` and `finding_id` respectively.
+
+The **lineage chain** leading to a finding preserves the full reasoning path:
+
+```
+goal  →spawns→  intent  →yields→  fact  →derived_from→  intent  →proves→  finding
+```
+
+This means you can always trace back from a confirmed finding to the original goal that motivated the investigation and every intermediate step.
+
+---
+
+## Severity and Disposition
+
+Every finding has two independent attributes you can update at any time.
+
+### Severity Levels
+
+| Level | Label |
+|---|---|
+| `critical` | Immediate, severe risk |
+| `high` | Significant exploitable vulnerability |
+| `medium` | Moderate risk requiring remediation |
+| `low` | Minor or informational issue |
+
+### Disposition Statuses
+
+| Status | Meaning |
+|---|---|
+| `open` | Confirmed, not yet addressed |
+| `fixed` | Verified as remediated (can be set manually or automatically by retest) |
+| `accepted` | Risk accepted — will not be fixed |
+| `false_positive` | Confirmed as not a real vulnerability |
+
+```http
+PATCH /api/exploration/findings/{id}
+```
+
+```json
+{ "status": "fixed" }
+{ "severity": "high" }
+{ "name": "SQL Injection in /api/users" }
+{ "vulnclass": "SQLi" }
+```
+
+---
+
+## Views: Flat, Grouped, and Asset Tree
+
+The findings page provides three complementary views that all share the same filter state.
+
+<Tabs>
+  <Tab title="All Findings (Flat)">
+    A single paginated table across all tasks. Supports sorting, filtering, inline editing of name/severity/vulnclass, status changes, and row-level actions. Supports pages of 10, 20, 50, or 100 items.
+  </Tab>
+  <Tab title="By Task (Grouped)">
+    Findings grouped under their originating task. Each group has its own pagination. Useful when reviewing the output of a specific campaign.
+  </Tab>
+  <Tab title="By Asset (Tree)">
+    Left-side asset tree (Company → root domain / IP → subdomain → service → endpoint) with findings for the selected subtree on the right. Findings with no associated asset appear in an "Unassociated" bucket. The asset tree is navigational — it does not auto-poll; refresh manually or when making changes.
+  </Tab>
+</Tabs>
+
+---
+
+## Finding Detail
+
+The finding detail panel surfaces all available information about a confirmed vulnerability.
+
+<CardGroup cols={2}>
+  <Card title="Evidence" icon="file-magnifying-glass">
+    The free-text evidence field contains the PoC output, key command snippets, and any annotations the worker recorded at discovery time.
+  </Card>
+  <Card title="Traffic Links" icon="network-wired">
+    HTTP/HTTPS traffic captures bound to the finding as proof. Each binding has a role (`baseline`, `proof`, `verification`, or `supporting`) and an optional note. See the [Traffic Recording](/features/traffic) page for details.
+  </Card>
+  <Card title="Lineage Chain" icon="diagram-project">
+    The full exploration sub-DAG from the task root to this finding's node — every ancestor intent, fact, and goal that led here.
+
+    ```http
+    GET /api/exploration/findings/{id}/lineage
+    ```
+  </Card>
+  <Card title="Retest History" icon="rotate">
+    All past retest sessions, each with its conclusion, evidence, and a link to the agent session transcript.
+
+    ```http
+    GET /api/exploration/findings/{id}/retests
+    ```
+  </Card>
+</CardGroup>
+
+---
+
+## Finding Lineage
+
+The lineage endpoint returns the exploration sub-DAG anchored at a finding — all ancestor nodes and the edges between them. This powers the "how was this found?" view in the finding detail panel.
+
+```http
+GET /api/exploration/findings/{id}/lineage
+```
+
+Response shape:
+
+```json
+{
+  "nodes": [...],
+  "edges": [...]
+}
+```
+
+If the originating task has been deleted the response returns empty `nodes` and `edges` arrays rather than an error.
+
+---
+
+## Deepen a Finding
+
+For any confirmed finding you can trigger a targeted deeper investigation that creates a high-priority intent anchored to that finding's assets:
+
+```http
+POST /api/exploration/findings/{id}/deepen
+```
+
+Deepening is useful when the initial discovery was surface-level (e.g. a reflected XSS with limited demonstrated impact) and you want the agents to explore further exploitation potential without creating a new task from scratch. The new intent is linked to the existing finding node via a `derived_from` edge, preserving the full lineage.
+
+---
+
+## Stats Endpoint
+
+Aggregate counts across the entire findings table — total by severity, by status, and by vuln class — power the stat cards at the top of the findings page:
+
+```http
+GET /api/exploration/findings/stats
+```
+
+This endpoint does not accept task or scope filters; it reflects the full global findings table. Individual page filters are applied client-side against the paginated list.
+
+---
+
+## Vulnerability Retest Workflow
+
+Retesting runs a dedicated `retester` agent in an isolated session. It does not require the original task to be running.
+
+<Steps>
+  <Step title="Initiate the Retest">
+    From any finding row or the finding detail panel, click **Retest** / **Launch Retest**. Optionally provide:
+    - Fixed version or patch description
+    - Test conditions or limitations
+    - Any additional context for the retester
+
+    ```http
+    POST /api/exploration/findings/{id}/retests
+    ```
+  </Step>
+  <Step title="Concurrent Safety">
+    If a retest is already in progress for the same finding, Artex reuses the existing session rather than spawning a duplicate. After the running session ends (stopped, failed, or server restart) a new retest can be launched.
+  </Step>
+  <Step title="View Results">
+    Each completed retest records:
+    - **Conclusion** — `still_reproducible`, `fixed`, or `cannot_confirm`
+    - **Evidence** — the agent's proof output
+    - **Session link** — full transcript of the agent's execution
+
+    When the conclusion is `fixed`, the finding's status is automatically updated to `fixed`. All other conclusions leave the status unchanged; you can update it manually via the status dropdown.
+  </Step>
+</Steps>
+
+```http
+GET /api/exploration/findings/retests/active   ← all currently running retests
+GET /api/exploration/findings/{id}/retests     ← history for a specific finding
+```
+
+---
+
+## Traffic Evidence
+
+One or more recorded traffic exchanges can be bound to a finding as structured proof. Each binding carries:
+
+- **`traffic_id`** — the ID returned by `traffic_search` (never guessed or inferred)
+- **`role`** — `baseline` | `proof` | `verification` | `supporting`
+- **`note`** — how this capture supports the vulnerability conclusion
+
+Traffic bindings are managed through a dedicated sub-resource on the finding. See [Traffic Recording](/features/traffic) for how captures are recorded and searched.
+
+<Warning>
+  Artex enforces that traffic IDs come from real captures returned by `traffic_search`. Workers are explicitly instructed not to infer IDs by domain name or timestamp, and not to re-probe a target just to generate a traffic record.
+</Warning>
+
+---
+
+## Export
+
+Export findings in several formats for reporting or downstream tool integration.
+
+```http
+GET /api/exploration/findings/export
+```
+
+<Tabs>
+  <Tab title="Markdown (single file)">
+    `?scope=all&format=md-single` — all findings in one `.md` report, timestamped.
+  </Tab>
+  <Tab title="Markdown (ZIP)">
+    `?scope=all&format=md-zip` — one `.md` per finding, bundled with any attached evidence into a single ZIP archive.
+  </Tab>
+  <Tab title="CSV">
+    `?scope=all&format=csv` — flat spreadsheet with all finding fields.
+  </Tab>
+  <Tab title="JSON">
+    `?scope=all&format=json` — structured JSON array matching the finding DTO schema.
+  </Tab>
+</Tabs>
+
+**Scope options:**
+
+| Parameter | Behaviour |
+|---|---|
+| `scope=all` | Every finding in the database |
+| `scope=filtered` | Apply the same `severity` / `status` / `vulnclass` / `task_id` / `q` filters as the current page |
+| `scope=selected` | Only the comma-separated `ids` provided in the `ids` parameter |

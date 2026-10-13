@@ -1,0 +1,306 @@
+---
+title: "All Artex Installation Methods Explained"
+sidebarTitle: "Installation"
+description: "Five Artex install paths — install script, Docker Compose, prebuilt binary, source build, and release packaging — each with exact shell commands to follow."
+---
+
+Artex ships in several forms to fit different environments: a Docker image for the simplest setup, prebuilt binaries for air-gapped machines, and full source builds for anyone who wants to modify the code. All five methods produce the same runtime — a single Go binary that embeds the Next.js frontend and listens on port **8787** by default.
+
+<Note>
+  Every installation method requires a **PostgreSQL** database. The Docker-based methods spin one up automatically. For local/binary installs you can either point Artex at an existing instance or let the installer start one in a Docker container.
+</Note>
+
+## The `start.sh` Daemon Wrapper
+
+Before choosing an installation method, understand one universal rule: **always launch Artex with `start.sh` (or `start.bat` on Windows), never by running `./artex` directly.**
+
+`start.sh` is a lean POSIX shell daemon loop. It starts `./artex` as a child process and watches its exit code:
+
+| Exit code | Meaning | `start.sh` action |
+|---|---|---|
+| `0` | Clean stop (user request) | Exit the loop |
+| `75` | Application requested restart (e.g. after a one-click update) | Restart immediately |
+| Any other | Crash | Restart after exponential back-off (1 → 2 → 4 … max 60 s) |
+
+The one-click update feature in the UI relies on this contract: the Go binary downloads, checksums, smoke-tests, and stages the new binary as `artex.new`, then exits with code `75`. `start.sh` restarts, and the new binary completes its own swap at startup. If you ran `./artex` directly, the process would just stop and never be restarted.
+
+**To run Artex in the background as a persistent daemon:**
+
+```bash
+nohup ./start.sh >artex.log 2>&1 &
+```
+
+Any extra arguments are forwarded verbatim to the `artex` binary:
+
+```bash
+./start.sh -addr :9000 -proxy :9001
+```
+
+---
+
+## Installation Methods
+
+<Tabs>
+  <Tab title="1 · Install Script">
+    ### One-Click Install Script (Recommended)
+
+    The `install.sh` script is the recommended starting point for new installations. It auto-detects your environment, installs Docker if needed (Linux only), and walks you through either a fully-Dockerised setup or a local compiled install via an interactive prompt.
+
+    ```bash
+    git clone https://github.com/mhtsec/ARTEX.git
+    cd ARTEX
+    ./install.sh
+    ```
+
+    The script presents two options:
+
+    **Option 1 — Full Docker install**
+
+    1. Detects or installs Docker and the Compose plugin
+    2. Prompts for a Postgres password (press Enter to generate a random one)
+    3. Optionally prompts for an `ANTHROPIC_API_KEY`
+    4. Writes a `.env` file from `.env.example` with your values substituted
+    5. Runs `docker compose pull && docker compose up -d`
+    6. Prints `→ http://localhost:8787`
+
+    **Option 2 — Local compiled install**
+
+    1. Asks how to handle PostgreSQL: connect to an existing instance, or spin up a fresh one in Docker
+    2. Generates a `config.json` with the database connection details
+    3. Checks for Go (≥ 1.21) — exits with a helpful error if not found
+    4. If `npm` is available: builds the Next.js static export, copies it into `server/webui/dist`, and compiles the `embedui`-tagged binary
+    5. If `npm` is absent: compiles a backend-only binary (you'll need to run the frontend separately with `npm run dev`)
+    6. Starts the binary
+
+    After either option, open **http://localhost:8787** and complete the `/setup` wizard to set your admin password.
+  </Tab>
+
+  <Tab title="2 · Docker Compose">
+    ### Docker Compose (Manual)
+
+    If you prefer explicit control over each step — or want to review the `.env` before anything starts — run the Compose stack manually.
+
+    ```bash
+    git clone https://github.com/mhtsec/ARTEX.git
+    cd ARTEX
+    cp .env.example .env
+    ```
+
+    Edit `.env` and set at minimum `POSTGRES_PASSWORD`:
+
+    ```ini .env
+    ARTEX_TAG=latest
+    POSTGRES_USER=artex
+    POSTGRES_PASSWORD=your-strong-password
+    POSTGRES_DB=artex
+
+    # Optional — configurable later in the UI
+    ANTHROPIC_API_KEY=
+    OPENAI_API_KEY=
+    ```
+
+    Start the stack:
+
+    ```bash
+    docker compose up -d
+    ```
+
+    Open **http://localhost:8787** once both containers are healthy (`docker compose ps`).
+
+    <Note>
+      The original `autumn27/artex` image has been removed from Docker Hub. The repository now self-maintains the image as **`mianhuatang11/artex`**. If that image is also unavailable, build it locally from the included multi-stage Dockerfile:
+
+      ```bash
+      docker compose build && docker compose up -d
+      ```
+
+      You can override build-time proxies if needed:
+
+      ```bash
+      docker compose build \
+        --build-arg GOPROXY=https://goproxy.cn,direct \
+        --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+      ```
+    </Note>
+
+    The image bundles common security tools (ripgrep, curl, vim, npm, nmap, and others). The `./skills` and `./data` directories are bind-mounted so they survive container replacement during upgrades.
+  </Tab>
+
+  <Tab title="3 · Prebuilt Binary">
+    ### Prebuilt Binary from Releases
+
+    Pre-compiled release zips for Linux amd64/arm64, macOS amd64/arm64, and Windows amd64 are published to the [original repository's Releases page](https://github.com/Autumn-27/ARTEX/releases). Note that this backup repository does not host binaries; if the original Releases page is unavailable, use Method 2 (Docker) or Method 4 (build from source).
+
+    **Download and extract** the zip for your platform, then:
+
+    ```bash
+    # The zip contains: artex  start.sh  skills/  config.example.json
+    cp config.example.json config.json
+    ```
+
+    Edit `config.json` to point at your PostgreSQL instance:
+
+    ```json config.json
+    {
+      "database": {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "user": "artex",
+        "password": "yourpass",
+        "dbname": "artex",
+        "sslmode": "disable"
+      }
+    }
+    ```
+
+    You can also use a single DSN string instead of individual fields:
+
+    ```json config.json
+    {
+      "database": {
+        "dsn": "postgres://artex:yourpass@127.0.0.1:5432/artex?sslmode=disable"
+      }
+    }
+    ```
+
+    Or skip `config.json` entirely and set the `ARTEX_PG_DSN` environment variable — it takes precedence over the file.
+
+    Start Artex:
+
+    ```bash
+    ./start.sh
+    ```
+
+    Run in the background:
+
+    ```bash
+    nohup ./start.sh >artex.log 2>&1 &
+    ```
+
+    <Warning>
+      Always use `./start.sh`, not `./artex` directly. Running the binary directly disables the restart loop and breaks the one-click update feature. See the [start.sh section](#the-startsh-daemon-wrapper) above for details.
+    </Warning>
+  </Tab>
+
+  <Tab title="4 · Build from Source">
+    ### Build from Source
+
+    Building from source produces the same single embedded binary as the release zips. You need **Go** (check `go.mod` for the minimum version) and **Node.js / npm**.
+
+    **Step 1 — Build the Next.js static export**
+
+    ```bash
+    cd web
+    npm ci
+    npm run build:static
+    cd ..
+    ```
+
+    This produces a static site in `web/out/`.
+
+    **Step 2 — Copy the frontend into the embed directory**
+
+    ```bash
+    cp -r web/out server/webui/dist
+    ```
+
+    **Step 3 — Compile the Go binary with frontend embedding**
+
+    The `-tags embedui` build tag tells the Go compiler to include the `server/webui/dist` directory via `go:embed`. Without it, the binary serves no frontend.
+
+    ```bash
+    CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
+    ```
+
+    **Step 4 — Start the server**
+
+    ```bash
+    ./start.sh
+    ```
+
+    Or in the background:
+
+    ```bash
+    nohup ./start.sh >artex.log 2>&1 &
+    ```
+
+    <Tip>
+      During active development you don't need to rebuild for every change. Run `./dev.sh` instead — it starts the Go backend on `:8787` (without embedding the frontend) and the Next.js dev server on `:5173` with hot-reload. The frontend dev server proxies all `/api` requests to the backend automatically.
+    </Tip>
+  </Tab>
+
+  <Tab title="5 · Release Build Script">
+    ### Cross-Platform Release Build (`build.sh`)
+
+    `build.sh` automates the full release pipeline: it builds and embeds the frontend, strips debug info from the Go binary with linker flags, and packages the output into distributable zips.
+
+    **Default — build all platforms:**
+
+    ```bash
+    ./build.sh --release
+    ```
+
+    This produces zip archives under `dist/` for the default target matrix:
+
+    - `linux/amd64`, `linux/arm64`
+    - `darwin/amd64`, `darwin/arm64`
+    - `windows/amd64`
+
+    Example output files:
+
+    ```text
+    dist/artex-0.3.3-linux-amd64.zip
+    dist/artex-0.3.3-linux-arm64.zip
+    dist/artex-0.3.3-darwin-amd64.zip
+    dist/artex-0.3.3-darwin-arm64.zip
+    dist/artex-0.3.3-windows-amd64.zip
+    ```
+
+    **Custom target selection:**
+
+    Use the `ARTEX_TARGETS` environment variable to restrict which platforms are built:
+
+    ```bash
+    ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
+    ```
+
+    Or build and package a single target:
+
+    ```bash
+    ./build.sh --target linux/amd64
+    ```
+
+    **UPX compression (optional):**
+
+    UPX self-extracting binaries are disabled by default because they are incompatible with some Linux kernels, virtualisation environments, and security policies. Enable them explicitly once you have confirmed your target environment is compatible:
+
+    ```bash
+    ./build.sh --target linux/amd64 --upx
+    ```
+
+    <Warning>
+      Do not enable `--upx` for binaries you plan to distribute broadly. Incompatible environments will fail to execute the binary entirely, with no useful error message.
+    </Warning>
+
+    The resulting zips each contain the `artex` binary, `start.sh` (or `start.bat`), the `skills/` directory, and `config.example.json` — everything needed to run on the target platform.
+  </Tab>
+</Tabs>
+
+---
+
+## Post-Installation Checklist
+
+<Steps>
+  <Step title="Open http://localhost:8787">
+    On first launch you are redirected to `/setup`. Create your administrator account.
+  </Step>
+  <Step title="Configure your LLM provider">
+    Navigate to **LLM Configuration** in the sidebar. Add your `ANTHROPIC_API_KEY` or OpenAI-compatible credentials, select a model, and activate the configuration. You can also set these via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ARTEX_LLM_BASE_URL`) before starting the process.
+  </Step>
+  <Step title="Adjust agent concurrency">
+    Go to **System Settings → Agent Configuration** and set the number of worker agents per task. The default is **3**. Higher values increase parallelism but also LLM token consumption.
+  </Step>
+  <Step title="Create a task">
+    Open **Tasks → New Task**, enter your target scope, and start a scan. Watch the **Activity Stream** on the dashboard for real-time progress.
+  </Step>
+</Steps>

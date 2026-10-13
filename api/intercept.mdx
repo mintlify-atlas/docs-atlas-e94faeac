@@ -1,0 +1,258 @@
+---
+title: "Artex Intercept API: Tool-Call Approval & Rule Management"
+sidebarTitle: "Intercept API"
+description: "Configure intercept rules, review and approve or deny pending tool calls, inspect decision history, manage per-tool config, and set up the LLM auto-judge."
+---
+
+The Intercept system is Artex's human-in-the-loop safety layer. Before a worker agent executes a tool call, Artex evaluates it against intercept rules. Matching calls are held in a pending queue for human approval or automatic judgment by an LLM judge. This page documents all intercept management endpoints.
+
+<Note>
+  Task-scoped intercept rules (e.g., allow `nmap` on one task while denying it globally) are documented in the [Tasks API](/api/tasks) under **Task-scoped Intercept Rules**.
+</Note>
+
+---
+
+## Intercept Rules
+
+Rules are evaluated in priority order. The first matching rule determines whether a tool call is allowed, denied, or held for approval.
+
+### GET /api/intercept/rules
+
+List all global intercept rules.
+
+**Rule object fields**
+
+<ResponseField name="id" type="integer">Rule ID.</ResponseField>
+<ResponseField name="pattern" type="string">
+  Pattern matched against the tool name and/or arguments. Supports glob-style wildcards.
+</ResponseField>
+<ResponseField name="action" type="string">
+  `allow` — permit without review; `deny` — block immediately; `review` — hold for human approval.
+</ResponseField>
+<ResponseField name="enabled" type="boolean">Whether this rule is currently active.</ResponseField>
+<ResponseField name="priority" type="integer">Evaluation order (lower number = higher priority).</ResponseField>
+<ResponseField name="description" type="string">Optional human-readable note.</ResponseField>
+
+---
+
+### POST /api/intercept/rules
+
+Create a new global intercept rule.
+
+<ParamField body="pattern" type="string" required>
+  Match pattern against tool name and/or argument values. Example: `"run_command"` matches any call to the `run_command` tool; `"run_command:*rm -rf*"` matches the tool with specific argument content.
+</ParamField>
+
+<ParamField body="action" type="string" required>
+  `allow`, `deny`, or `review`.
+</ParamField>
+
+<ParamField body="enabled" type="boolean">
+  Whether the rule is active on creation. Defaults to `true`.
+</ParamField>
+
+<ParamField body="priority" type="integer">
+  Evaluation order. Lower values are checked first. Rules with equal priority are evaluated by creation order.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Optional note to explain the rule's intent.
+</ParamField>
+
+---
+
+### PUT /api/intercept/rules/{id}
+
+Replace all fields of an existing rule.
+
+<ParamField body="pattern" type="string" required>Updated match pattern.</ParamField>
+<ParamField body="action" type="string" required>`allow`, `deny`, or `review`.</ParamField>
+<ParamField body="enabled" type="boolean">Rule enabled state.</ParamField>
+<ParamField body="priority" type="integer">Evaluation order.</ParamField>
+<ParamField body="description" type="string">Human-readable note.</ParamField>
+
+---
+
+### DELETE /api/intercept/rules/{id}
+
+Permanently delete an intercept rule.
+
+---
+
+### POST /api/intercept/rules/{id}/toggle
+
+Toggle a rule's `enabled` state without modifying other fields.
+
+<ResponseField name="enabled" type="boolean">The new `enabled` state after toggling.</ResponseField>
+
+---
+
+## Pending Approvals
+
+Tool calls that matched a `review` rule are placed in the pending queue. The agent is blocked until a human (or the LLM judge) makes a decision.
+
+### GET /api/intercept/pending
+
+List all currently pending approval requests.
+
+**Pending item fields**
+
+<ResponseField name="id" type="string">Pending item ID.</ResponseField>
+<ResponseField name="task_id" type="string">ID of the task that generated the call.</ResponseField>
+<ResponseField name="agent" type="string">Agent key (e.g., `worker`, `planner`).</ResponseField>
+<ResponseField name="tool" type="string">Tool name being called.</ResponseField>
+<ResponseField name="args_summary" type="string">Truncated argument preview for the queue view.</ResponseField>
+<ResponseField name="created_at" type="string">RFC 3339 timestamp when the call was intercepted.</ResponseField>
+
+---
+
+### GET /api/intercept/pending/{id}
+
+Fetch full detail of one pending request including the complete tool call arguments.
+
+<ResponseField name="id" type="string">Pending item ID.</ResponseField>
+<ResponseField name="tool" type="string">Tool name.</ResponseField>
+<ResponseField name="args" type="object">Full tool call arguments as a JSON object.</ResponseField>
+<ResponseField name="task_id" type="string">Originating task ID.</ResponseField>
+<ResponseField name="agent" type="string">Agent key.</ResponseField>
+<ResponseField name="intent_id" type="string">Worker intent node ID.</ResponseField>
+<ResponseField name="matched_rule" type="object">The intercept rule that triggered this hold.</ResponseField>
+
+---
+
+### POST /api/intercept/pending/{id}/decide
+
+Approve or deny a pending tool call. The blocked agent is unblocked immediately.
+
+<ParamField body="decision" type="string" required>
+  `approve` — allow the tool call to proceed; `deny` — reject it and return an error to the agent.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  Optional explanation for the decision. Stored in history and visible in audit logs.
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8787/api/intercept/pending/abc123/decide \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "approve", "reason": "Confirmed safe to run nmap on this target."}'
+```
+
+---
+
+## Approval History
+
+The history log retains every intercept decision for audit purposes.
+
+### GET /api/intercept/history
+
+List past approval decisions, newest first. Supports pagination via `?page` and `?limit`.
+
+**Query parameters**
+
+| Parameter | Description |
+|-----------|-------------|
+| `task_id` | Filter by task ID. |
+| `decision` | `approved` or `denied`. |
+| `tool` | Filter by tool name. |
+
+<ResponseField name="id" type="string">History entry ID.</ResponseField>
+<ResponseField name="tool" type="string">Tool that was intercepted.</ResponseField>
+<ResponseField name="decision" type="string">`approved` or `denied`.</ResponseField>
+<ResponseField name="decided_by" type="string">`human` or `judge`.</ResponseField>
+<ResponseField name="reason" type="string">Decision rationale.</ResponseField>
+<ResponseField name="task_id" type="string">Originating task ID.</ResponseField>
+<ResponseField name="created_at" type="string">RFC 3339 timestamp.</ResponseField>
+
+---
+
+### GET /api/intercept/history/{id}
+
+Fetch full detail of one historical decision including the original tool call arguments.
+
+---
+
+### GET /api/intercept/history/{id}/execution
+
+Fetch the execution trace for a decision that was approved — what the tool actually returned when the call was allowed to proceed.
+
+<ResponseField name="result" type="string">Tool execution output.</ResponseField>
+<ResponseField name="is_error" type="boolean">Whether the tool call returned an error.</ResponseField>
+<ResponseField name="duration_ms" type="integer">Execution duration in milliseconds.</ResponseField>
+
+---
+
+## Task Intercept View
+
+### GET /api/intercept/task/{taskID}
+
+Return all intercept items (pending and historical) for a specific task in a unified view. Used by the per-task Intercept panel.
+
+---
+
+## Per-Tool Configuration
+
+Tool config lets you set default intercept behaviour per tool without writing individual rules.
+
+### GET /api/intercept/tool-config
+
+Return the per-tool intercept configuration map. Each entry specifies the default intercept mode for a named tool.
+
+<ResponseField name="tool_configs" type="object">
+  Object keyed by tool name, each value being `{"mode": "allow" | "review" | "deny"}`.
+</ResponseField>
+
+---
+
+### PUT /api/intercept/tool-config
+
+Replace the entire per-tool config map.
+
+<ParamField body="tool_configs" type="object" required>
+  Object mapping tool names to their config. Example:
+  ```json
+  {
+    "run_command": {"mode": "review"},
+    "http_request": {"mode": "allow"}
+  }
+  ```
+</ParamField>
+
+---
+
+## LLM Auto-Judge
+
+When a call is not covered by any rule and no human is reviewing, the LLM judge evaluates it automatically. The judge uses its own LLM call to decide approve/deny based on the task context and call content.
+
+### GET /api/intercept/judge
+
+Return the current LLM judge configuration.
+
+<ResponseField name="enabled" type="boolean">Whether the auto-judge is active.</ResponseField>
+<ResponseField name="profile_id" type="integer">LLM profile used for judge calls (null = global active).</ResponseField>
+<ResponseField name="prompt" type="string">System prompt template used to instruct the judge model.</ResponseField>
+
+---
+
+### PUT /api/intercept/judge
+
+Update the LLM judge configuration.
+
+<ParamField body="enabled" type="boolean" required>Enable or disable the auto-judge.</ParamField>
+<ParamField body="profile_id" type="integer">LLM profile ID for judge calls. Omit to use the global active profile.</ParamField>
+<ParamField body="prompt" type="string">Override the judge system prompt.</ParamField>
+
+<Warning>
+  Enabling the auto-judge means the LLM decides whether sensitive tool calls (like shell commands) are allowed to run. Carefully review the judge prompt and use a conservative default-deny rule as a safety net.
+</Warning>
+
+---
+
+### GET /api/intercept/judge/usage
+
+Return cumulative token usage statistics for all LLM judge calls.
+
+<ResponseField name="input_tokens" type="integer">Total prompt tokens consumed by judge calls.</ResponseField>
+<ResponseField name="output_tokens" type="integer">Total completion tokens consumed by judge calls.</ResponseField>
+<ResponseField name="total_calls" type="integer">Total number of judge evaluations made.</ResponseField>

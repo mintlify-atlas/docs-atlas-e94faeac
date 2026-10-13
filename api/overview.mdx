@@ -1,0 +1,252 @@
+---
+title: "Artex API Reference: Authentication & Overview"
+sidebarTitle: "Overview"
+description: "Base URL, JWT authentication flow, first-run setup, SSE streams, health check, and stats endpoint for the Artex HTTP API."
+---
+
+The Artex backend exposes a single JSON/HTTP API served by the embedded Go binary. Every request and response uses `Content-Type: application/json`. The API is protected by JWT (HS256) except for the auth bootstrap endpoints and the health check. All endpoints are prefixed with `/api/`.
+
+## Base URL
+
+```
+http://localhost:8787
+```
+
+The port can be changed via the `PORT` environment variable or a configuration file. When running behind a reverse proxy, adjust accordingly.
+
+---
+
+## Authentication
+
+Artex uses **JWT Bearer tokens**. Obtain a token by logging in, then send it in the `Authorization` header on every subsequent request.
+
+<Steps>
+  <Step title="Check initialization status">
+    Before the first login, verify whether an admin password has been set.
+
+    ```bash
+    curl http://localhost:8787/api/auth/status
+    ```
+
+    **Response**
+    ```json
+    { "initialized": false }
+    ```
+
+    When `initialized` is `false`, proceed to the init step.
+  </Step>
+
+  <Step title="Create the admin account (first run only)">
+    This endpoint is only accepted when no password has been set. Subsequent calls are rejected.
+
+    ```bash
+    curl -X POST http://localhost:8787/api/auth/init \
+      -H "Content-Type: application/json" \
+      -d '{"password": "YourStrongPassword!"}'
+    ```
+
+    After a successful init the setup page redirects you to the login screen.
+  </Step>
+
+  <Step title="Log in and obtain a token">
+    ```bash
+    curl -X POST http://localhost:8787/api/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{"username": "admin", "password": "YourStrongPassword!"}'
+    ```
+
+    **Response**
+    ```json
+    { "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." }
+    ```
+
+    Tokens are valid for **7 days** and are signed with HS256.
+  </Step>
+
+  <Step title="Use the token in API calls">
+    ```bash
+    TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    curl http://localhost:8787/api/tasks \
+      -H "Authorization: Bearer $TOKEN"
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Full Authentication Example
+
+The snippet below shows the complete flow: log in, capture the token, and make an authenticated request.
+
+```bash
+# 1. Login
+RESPONSE=$(curl -s -X POST http://localhost:8787/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"YourStrongPassword!"}')
+
+# 2. Extract token (requires jq)
+TOKEN=$(echo "$RESPONSE" | jq -r '.token')
+
+# 3. Authenticated request
+curl http://localhost:8787/api/stats \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+<Note>
+  For SSE streaming endpoints (`/api/logs/stream`, `/api/exploration/activity/stream`) the token can alternatively be passed as a `?token=<jwt>` query parameter or an `artex_token` cookie, because browser `EventSource` does not support custom headers.
+</Note>
+
+---
+
+## Auth Endpoints
+
+### POST /api/auth/login
+
+Authenticate and receive a Bearer token.
+
+**Request body**
+
+<ParamField body="username" type="string" required>
+  Always `admin` — Artex is single-user.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The admin password set during first-run init or the most recent change-password call.
+</ParamField>
+
+**Response**
+
+<ResponseField name="token" type="string">
+  A signed HS256 JWT valid for 7 days. Send as `Authorization: Bearer <token>`.
+</ResponseField>
+
+---
+
+### GET /api/auth/status
+
+Returns whether the admin password has been initialized.
+
+<ResponseField name="initialized" type="boolean">
+  `false` on a brand-new install before `POST /api/auth/init` is called.
+</ResponseField>
+
+---
+
+### POST /api/auth/init
+
+Create the admin password on first run. Rejected once a password exists.
+
+<ParamField body="password" type="string" required>
+  Minimum 8 characters (rune count). Maximum 72 bytes (bcrypt limit).
+</ParamField>
+
+---
+
+### POST /api/auth/change-password
+
+Update the admin password while authenticated.
+
+<ParamField body="current_password" type="string" required>
+  The existing password for verification.
+</ParamField>
+
+<ParamField body="new_password" type="string" required>
+  The replacement password. Same length constraints apply.
+</ParamField>
+
+---
+
+## Health & Stats
+
+### GET /api/health
+
+Liveness check — requires no authentication.
+
+```bash
+curl http://localhost:8787/api/health
+```
+
+**Response**
+
+```json
+{ "ok": true, "service": "artex", "version": "v1.2.3" }
+```
+
+<ResponseField name="ok" type="boolean">Always `true` when the process is alive.</ResponseField>
+<ResponseField name="service" type="string">Always `"artex"`.</ResponseField>
+<ResponseField name="version" type="string">The build version injected at compile time (defaults to `"dev"` for local builds).</ResponseField>
+
+---
+
+### GET /api/stats
+
+System and task statistics. Accepts an optional `?task=<id>` query parameter to scope stats to a specific task. Omit the parameter (or pass `active`) to get the currently active task.
+
+**Response fields (always present)**
+
+<ResponseField name="llm_configured" type="boolean">
+  Whether a functional LLM provider is installed.
+</ResponseField>
+
+<ResponseField name="engine_mode" type="string">
+  One of `exploring`, `paused`, `stalled`, or `idle`.
+</ResponseField>
+
+<ResponseField name="assets" type="integer">
+  Total asset count across the global Asset Graph.
+</ResponseField>
+
+<ResponseField name="asset_counts" type="object">
+  Per-type asset counts (`{"domain": 12, "ip": 4, ...}`).
+</ResponseField>
+
+**Response fields (when a task is resolved)**
+
+<ResponseField name="active_task" type="object">
+  Object containing `id`, `description`, `goal`, `running`, `paused`, `engine_mode`, `in_flight`, `llm_in_flight`, `last_activity`, `stalled`, `goals_total`, `goals_met`.
+</ResponseField>
+
+<ResponseField name="exploration" type="object">
+  Aggregate exploration statistics for the resolved task (node counts by kind/state).
+</ResponseField>
+
+---
+
+## SSE Streams
+
+Two Server-Sent Event streams let clients receive real-time updates without polling.
+
+<CardGroup cols={2}>
+  <Card title="Activity Stream" icon="bolt">
+    `GET /api/exploration/activity/stream`
+
+    Push updates of worker tool calls, findings, and planner events for a task. Requires `?task=<id>`. Accepts `?since=<seq>` to replay from a known cursor.
+  </Card>
+  <Card title="Log Stream" icon="terminal">
+    `GET /api/logs/stream`
+
+    Streams the last 100 persisted log lines, then tails the live backend log. Useful for monitoring LLM call activity and debugging agent behaviour.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Both streams accept the JWT via `?token=<jwt>` query parameter in addition to the `Authorization` header, since browser `EventSource` does not support setting headers.
+</Tip>
+
+---
+
+## Error Responses
+
+All errors use standard HTTP status codes with a JSON body:
+
+```json
+{ "error": "human-readable message" }
+```
+
+| Code | Meaning |
+|------|---------|
+| `400` | Bad request — malformed JSON, missing required field, or validation failure |
+| `401` | Unauthorized — missing or invalid JWT |
+| `404` | Resource not found |
+| `409` | Conflict — e.g. task is being deleted, or operation not allowed in current state |
+| `500` | Internal server error |

@@ -1,0 +1,159 @@
+---
+title: "Tool Intercept & Approval Gate System in Artex"
+sidebarTitle: "Intercept"
+description: "Control which agent tool calls execute automatically and which require human or model approval, with configurable rules, pending queues, and full execution audit trails."
+---
+
+Artex's intercept system acts as a safety gate between LLM agents and real-world actions. Before any tool call marked as potentially destructive executes, it is checked against a layered rule set that can allow it outright, deny it, or hold it for review. This gives operators fine-grained control over agent autonomy — especially important in a research environment where an agent may attempt to call destructive endpoints.
+
+## How Intercept Works
+
+Every tool invocation passes through the intercept pipeline before execution. The pipeline evaluates rules in order and stops at the first match:
+
+1. **Global intercept rules** — system-wide allow / deny / ask rules that apply to all tasks.
+2. **Per-task intercept rules** — task-scoped rules evaluated after global rules (see [Asset Intercept Rules](#asset-intercept-rules) for asset-scope controls).
+3. **Model fallback approval** — if no rule matches, an LLM judge makes the call.
+
+A decision of **allow** lets the call proceed immediately. A decision of **deny** blocks it and returns an error to the agent. A decision of **ask** places the call in the pending-approvals queue and suspends the worker until a human (or the model judge) decides.
+
+<Note>
+The intercept system operates at the tool call level, not the HTTP request level. Rules match against the tool name, arguments, and execution context — not raw traffic.
+</Note>
+
+## Rule Types and Pattern Matching
+
+Each rule specifies:
+
+- **Action**: `allow`, `deny`, or `ask`
+- **Match type**: string match or regex against the tool name and/or its arguments
+- **Enable/disable**: rules can be toggled without deletion
+
+Rules are evaluated in order; the first matching rule wins. If no rule matches, the model fallback judge is invoked.
+
+### Built-in Rules
+
+Artex ships with two categories of built-in rules that are applied by default. You can disable or delete them from **System → Command Intercept**.
+
+<CardGroup cols={2}>
+  <Card title="HTTP Destructive Methods" icon="triangle-exclamation">
+    Intercepts any tool call that issues an HTTP request with a `DELETE`, `PUT`, or similarly destructive HTTP method.
+  </Card>
+  <Card title="Delete-Path Patterns" icon="trash">
+    Intercepts calls whose URL path contains delete-like verbs: `/delete`, `/del`, `/remove`, `/unlink`, `/erase`, `/destroy`. The verb must be followed by a path separator to avoid false matches on words like `/delivery` or `/details`.
+  </Card>
+</CardGroup>
+
+<Tip>
+The delete-path rule was introduced because most real-world applications use `GET` or `POST` for deletion endpoints rather than the `DELETE` HTTP method. A call like `curl 'http://target/api/user/delete?id=1'` would bypass a method-only rule but is caught by the path-pattern rule.
+</Tip>
+
+## Managing Rules
+
+Navigate to **System → Command Intercept → Intercept Rules** to manage global rules.
+
+<Steps>
+  <Step title="Create a rule">
+    Click **New Rule**. Choose the action (`allow` / `deny` / `ask`), the match type (string or regex), and the pattern to match against. Optionally add a description.
+  </Step>
+  <Step title="Toggle a rule">
+    Use the enable/disable toggle on any rule row to suspend it without deleting it. Built-in rules can be disabled this way.
+  </Step>
+  <Step title="Edit or delete">
+    Click the edit icon to modify an existing rule. Delete removes it permanently; the built-in rules will reappear on the next server restart if you need to restore defaults.
+  </Step>
+</Steps>
+
+### Per-Task Rules
+
+Task-level rules are independent of global rules and only apply to a single task. They can be added when creating a task or from the task **Overview** tab at any time.
+
+The evaluation order for a task is: **global intercept rules first, then task intercept rules**. A task-level rule cannot override a global deny — if the global layer already matched, the task layer is not reached.
+
+## Pending Approvals
+
+When a rule or the model judge returns `ask`, the tool call is held in the pending-approvals queue. The worker is suspended and waits for a decision.
+
+<Tabs>
+  <Tab title="Listing Pending">
+    The **Pending** tab under **System → Command Intercept** shows all outstanding approvals across tasks. Each row shows the task, worker intent, tool name, argument summary, and how long it has been waiting.
+
+    Per-task intercept items are also visible in the **Intercept** tab of the task detail page.
+  </Tab>
+  <Tab title="Viewing Detail">
+    Click any pending item to see the full tool call context: the complete arguments, the agent's current intent, and any evaluation notes from a previous partial rule match.
+  </Tab>
+  <Tab title="Deciding">
+    Choose **Approve** to allow the call to proceed or **Deny** to block it and return an error to the agent. The worker resumes immediately after a decision is recorded.
+  </Tab>
+</Tabs>
+
+## Approval History
+
+All intercept decisions — whether made by a human, a rule, or the model judge — are recorded in the approval history. Navigate to **System → Command Intercept → History** to review past decisions.
+
+Each history entry contains:
+
+- The original tool call with full arguments
+- Which rule or judge made the decision
+- The decision itself (`allow` / `deny`) with a reason
+- The execution output (if the call was approved and ran)
+- A **Source** link that jumps directly to the tool execution in the originating worker session
+
+<Accordion title="Filtering History">
+  Use the status filter to show only approved, denied, or model-judged decisions. The source filter lets you separate human approvals from rule matches and model decisions.
+</Accordion>
+
+## Model Fallback Approval
+
+When no rule matches a tool call, Artex can delegate the decision to an LLM judge instead of blocking by default. The judge receives the tool name, arguments, execution context, and a short background summary, then returns one of `ALLOW`, `ASK`, or `DENY` with a brief explanation.
+
+Configure the model judge under **System → Command Intercept → Model Config**:
+
+| Setting | Description |
+|---|---|
+| **Enabled** | Toggle model fallback on or off. |
+| **Model** | Which LLM profile to use for judging. |
+| **Failure action** | What to do if the judge call fails: `allow`, `deny`, or `ask`. |
+| **Timeout action** | What to do if no human responds within the timeout. |
+
+<Warning>
+The judge's decision prompt instructs it to output only a JSON object. Instructions embedded in the tool arguments cannot override the judging policy — the judge is given only the tool call, not a free-form conversation.
+</Warning>
+
+### Token Usage Statistics
+
+Model fallback approvals are metered separately from task LLM usage. The **Model Fallback** section on the Command Intercept page shows cumulative statistics: call count, input tokens, output tokens, and cache read/write tokens. A mini bar chart displays daily consumption over the past 30 days.
+
+## Asset Intercept Rules
+
+Asset intercept rules are a separate system that controls **which assets the agent is allowed to discover and test**, rather than which tool calls execute. These rules live under **System → Asset Intercept** and operate as a global blacklist.
+
+<Note>
+Asset intercept rules are evaluated when an agent calls `add_intent` or `insert_assets`. An intent targeting a blocked asset is not queued, and a blocked asset is not inserted into the asset graph.
+</Note>
+
+Supported match types:
+- **Exact** — full match against a domain, IP, or URL
+- **Fuzzy** — substring or wildcard match
+- **CIDR** — network range match for IP assets
+
+### Built-in Asset Rules
+
+Two built-in fuzzy rules ship by default:
+
+| Pattern | Reason |
+|---|---|
+| `.gov` / `.gov.cn` | Government domains |
+| `.edu` / `.edu.cn` | Educational institution domains |
+
+These protect against accidental testing of public-sector targets. Disable or delete them under **System → Asset Intercept** if your lab environment requires them.
+
+### Local Delivery Allowance
+
+By default, SSRF protections in the notification subsystem block loopback and link-local addresses. To allow delivery to `localhost` or `127.x.x.x` targets in a fully local lab, set the environment variable:
+
+```bash
+ARTEX_NOTIFY_ALLOW_LOCAL=1
+```
+
+RFC 1918 private ranges (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`) are always allowed for notification delivery since internal SMTP relays and webhook receivers are common in self-hosted environments.

@@ -1,0 +1,141 @@
+---
+title: "IM and Email Push Notifications for Vulnerabilities"
+sidebarTitle: "Notifications"
+description: "Push vulnerability findings to DingTalk, Feishu, WeChat Work, Telegram, generic Webhooks, or email with configurable filters, digest batching, and delivery history."
+---
+
+Artex can push vulnerability findings to your team's IM tools and email as soon as they are discovered — or batched on a schedule for quieter channels. The notification system is designed to support multiple concurrent channels of the same type, fine-grained filtering per channel, and a reliable delivery queue with retry and audit history. Configuration lives under **System → Notifications**.
+
+## Supported Channels
+
+Artex ships with six built-in channel types. You can configure any number of instances of each type independently.
+
+<CardGroup cols={3}>
+  <Card title="DingTalk" icon="bell">
+    Webhook-based robot messages with markdown rendering. Supports custom signing secrets.
+  </Card>
+  <Card title="Feishu (Lark)" icon="bell">
+    Feishu bot webhook with rich card formatting. Markdown content is escaped to prevent injection.
+  </Card>
+  <Card title="WeChat Work" icon="bell">
+    Enterprise WeChat group bot via webhook URL. Supports markdown message type.
+  </Card>
+  <Card title="Telegram" icon="paper-plane">
+    Bot API delivery with HTML parse mode. Long messages are split safely to avoid cutting HTML entities.
+  </Card>
+  <Card title="Generic Webhook" icon="webhook">
+    POST a JSON payload to any HTTP endpoint. Custom headers (e.g. `Authorization`) are supported.
+  </Card>
+  <Card title="Email (SMTP)" icon="envelope">
+    Send via any SMTP server. Supports TLS, STARTTLS, and authentication. `4xx` temporary failures are retried; `5xx` permanent failures are not.
+  </Card>
+</CardGroup>
+
+## Multiple Instances Per Channel Type
+
+Each channel is an independent instance. You can have, for example, two DingTalk robots — one receiving only critical findings in real-time, another receiving all findings as a 30-minute digest. Each instance has its own credentials, filters, and rate limits.
+
+## Push Modes
+
+Each channel instance is configured for one of two push modes:
+
+<Tabs>
+  <Tab title="Real-time">
+    **Immediate delivery.** Each finding that passes the channel's filters is dispatched as soon as it is discovered — typically within a few seconds of the agent writing the finding to the database.
+
+    Use this mode for high-severity findings where your team needs instant awareness.
+  </Tab>
+  <Tab title="Digest">
+    **Batched delivery.** Findings are accumulated and sent as a single summary message on a configurable interval (default: 30 minutes). The message begins with a count and severity distribution of new findings, followed by individual entries.
+
+    Use this mode to reduce notification noise from lower-severity findings. To achieve "high-severity real-time, everything else digest", create two separate channel instances with different severity filters.
+
+    <Note>
+    If a digest message would exceed the channel's size limit, it is split into multiple messages. Each partial message notes how many findings continue in the next message. Findings that do not fit in one send are re-queued and do not count against their retry budget.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Filter Dimensions
+
+Each channel instance can filter which findings it receives across four independent dimensions:
+
+<CardGroup cols={2}>
+  <Card title="Minimum Severity" icon="shield-halved">
+    Only deliver findings at or above a threshold: `critical`, `high`, `medium`, or `low`. Typos in this field are rejected at save time with a list of valid values.
+  </Card>
+  <Card title="Task / Asset Scope" icon="crosshairs">
+    Restrict delivery to findings from specific tasks or assets. Leave empty to receive findings from all tasks.
+  </Card>
+  <Card title="Vulnerability Type Keywords" icon="tag">
+    Include or exclude findings whose vulnerability class matches a keyword list. **Exclude takes priority** over include when both are configured.
+  </Card>
+  <Card title="Disposition Change Toggle" icon="toggle-on">
+    When enabled, the channel also delivers notifications when a finding's status changes (e.g. from `open` to `fixed`). Disabled by default.
+  </Card>
+</CardGroup>
+
+## View Details Button
+
+Messages can include a **View Details** button that links back to the finding in the Artex UI. Set the **Back-link URL** in the channel configuration to the externally reachable base URL of your Artex instance (e.g. `https://artex.internal`). If left blank, no button is added to messages.
+
+## Rate Limiting
+
+Each channel instance has a **Rate per minute** (`rate_per_min`) setting that limits how many messages can be sent per minute using a token bucket. Setting `rate_per_min` to `0` disables rate limiting entirely.
+
+<Note>
+Rate limiting affects both real-time and digest modes. For digest channels, the number of findings packed into each digest message is bounded by both the rate budget available for the current period and an internal memory cap. Findings that cannot fit into the current send window are re-queued for the next digest cycle and do not lose a retry attempt.
+</Note>
+
+## Credential Masking
+
+Sensitive credential fields — webhook URLs, signing secrets, bot tokens, and SMTP passwords — are **never returned in plaintext** from the API. When you open a channel for editing, these fields show a masked value with a trailing hint (e.g. `••••••ab12`).
+
+When saving:
+- **Leave the field with its masked value** → the stored credential is kept unchanged.
+- **Clear the field** → the credential is removed from the channel configuration.
+- **Type a new value** → the new value replaces the stored credential.
+
+<Warning>
+If you change the target webhook URL of a channel, every credential field for that channel must be explicitly provided or cleared. Artex enforces this to prevent a credential from being silently re-used against a different endpoint — a class of attack that could exfiltrate secrets to an attacker-controlled URL.
+</Warning>
+
+## Delivery History
+
+Every attempted delivery is recorded. Navigate to **System → Notifications → Delivery History** to review all past sends.
+
+| Column | Description |
+|---|---|
+| **Channel** | Which channel instance sent this delivery |
+| **Status** | `sent`, `failed`, or `sending` |
+| **Attempts** | How many delivery attempts have been made |
+| **Failure Reason** | The sanitized error from the last failed attempt (credentials are stripped from URLs in error messages) |
+
+<Steps>
+  <Step title="Filter deliveries">
+    Use the channel and status filters to narrow the list. You can combine both filters to find, for example, all failed deliveries from a specific DingTalk instance.
+  </Step>
+  <Step title="Retry a failed delivery">
+    Click **Retry** on any failed item to immediately re-queue it. Retrying resets the attempt counter so the item receives its full retry budget again.
+  </Step>
+</Steps>
+
+## Security Notes
+
+The notification system includes several security hardening measures applied during an internal audit:
+
+<Accordion title="SSRF Protection">
+  Webhook and SMTP delivery addresses are validated at dial time (not just at configuration save time), covering DNS rebinding attacks. Loopback addresses (`127.x.x.x`, `::1`) and link-local addresses are blocked by default. Set `ARTEX_NOTIFY_ALLOW_LOCAL=1` to allow loopback delivery in fully isolated lab environments. RFC 1918 private ranges remain allowed since internal SMTP relays are common.
+</Accordion>
+
+<Accordion title="Markdown Escaping">
+  Vulnerability titles and summaries come from LLM output; asset URLs come from scan results. A crafted title could render as a clickable external link in DingTalk, Feishu, or WeChat Work, causing the messaging client to fetch the link (leaking the reader's IP). Artex applies single-line normalization and full Markdown meta-character escaping at each channel's render exit point.
+</Accordion>
+
+<Accordion title="Credential Leak Prevention">
+  For DingTalk, WeChat Work, and Telegram, credentials appear in the delivery URL. Previous versions logged the full URL on failure, exposing tokens in delivery history, server logs, and frontend error messages. All four exposure paths now strip credentials, retaining only `scheme://host` and the underlying error reason.
+</Accordion>
+
+<Accordion title="Atomic Finding Writes">
+  The database write that creates a finding and the write that creates a notification event for it happen in the same transaction. A misconfigured filter rule cannot abort this transaction and prevent a critical finding from being stored — the notification insert is wrapped in a `SAVEPOINT` so a filter error degrades gracefully to "finding stored but notification not queued" rather than a full rollback.
+</Accordion>

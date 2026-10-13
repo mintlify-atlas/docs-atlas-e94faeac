@@ -1,0 +1,132 @@
+{
+  "projectType": "saas",
+  "projectName": "Artex",
+  "projectDescription": "ARTEX is an AI-driven autonomous penetration testing system that uses a multi-agent LLM architecture to explore targets, discover assets, and identify vulnerabilities through a dual-graph (Asset Graph + Exploration Graph) approach.",
+  "theme": "aspen",
+  "primaryColor": "#171717",
+  "lightColor": "#6f31db",
+  "darkColor": "#bdb4de",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/dual-graph",
+              "concepts/agent-roles",
+              "concepts/engine-lifecycle"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/database",
+              "configuration/llm",
+              "configuration/environment"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/tasks",
+              "features/assets",
+              "features/findings",
+              "features/traffic",
+              "features/intercept",
+              "features/notifications",
+              "features/skills",
+              "features/mcp"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/binary",
+              "deployment/reverse-proxy",
+              "deployment/updates"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview"
+            ]
+          },
+          {
+            "group": "Tasks & Exploration",
+            "pages": [
+              "api/tasks",
+              "api/exploration",
+              "api/assets"
+            ]
+          },
+          {
+            "group": "System",
+            "pages": [
+              "api/llm",
+              "api/intercept",
+              "api/agents",
+              "api/skills"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multi-agent LLM orchestration with planner + worker architecture",
+    "Dual-graph system: global Asset Graph + per-task Exploration Graph",
+    "MITM traffic recording proxy for full request/response capture",
+    "Tool intercept/approval gate for human-in-the-loop oversight",
+    "Cross-worker process-level information exchange via trace search",
+    "Persistent planner todolist enabling stable multi-step attack chains",
+    "Vulnerability retest agent for automated fix verification",
+    "MCP (Model Context Protocol) integration for external tools",
+    "Skill system for reusable instruction packages",
+    "ScopeSentry asset sync for importing external reconnaissance data",
+    "IM notification push (DingTalk, Feishu, Telegram, email, webhooks)",
+    "Self-update mechanism with rollback support",
+    "Single-binary deployment with embedded Next.js frontend"
+  ],
+  "publicApiSurface": [
+    "GET /api/tasks — list tasks",
+    "POST /api/tasks — create task",
+    "POST /api/tasks/{id}/control — start/stop/pause task",
+    "GET /api/exploration/findings — list vulnerability findings",
+    "GET /api/exploration/findings/{id} — get finding detail",
+    "GET /api/assets — list assets",
+    "POST /api/assets — insert assets",
+    "GET /api/companies — list companies",
+    "POST /api/companies — create company",
+    "GET /api/intercept/pending — list pending intercept approvals",
+    "POST /api/intercept/pending/{id}/decide — approve/deny intercept",
+    "GET /api/llm/profiles — list LLM profiles",
+    "POST /api/llm/profiles — save LLM profile",
+    "GET /api/agents — list agents",
+    "GET /api/skills — list skills",
+    "POST /api/mcp — save MCP server config",
+    "GET /api/traffic — list traffic records",
+    "POST /api/sync/scopesentry/sync — sync assets from ScopeSentry",
+    "GET /api/update/check — check for updates",
+    "POST /api/update/apply — apply update",
+    "GET /api/stats — system statistics",
+    "GET /api/logs/stream — SSE log stream"
+  ]
+}

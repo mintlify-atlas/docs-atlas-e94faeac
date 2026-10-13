@@ -1,20 +1,76 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Artex: AI-Autonomous Penetration Testing System"
+sidebarTitle: "Home"
+description: "Artex is an open-source AI-driven penetration testing platform powered by a multi-agent LLM architecture. Deploy, configure, and let autonomous agents discover vulnerabilities."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Artex is a self-hosted, AI-driven autonomous penetration testing system built on a multi-agent LLM architecture. A planner agent decomposes targets into exploration goals while worker agents execute real tooling — bash, HTTP, nmap, and more — recording every request and finding in a dual-graph database. The entire system ships as a single Go binary with an embedded Next.js dashboard.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get Artex running in under five minutes with Docker Compose
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    All five installation methods: Docker, binary, source, and more
+  </Card>
+  <Card title="Core Concepts" icon="brain" href="/concepts/architecture">
+    Understand the dual-graph architecture and multi-agent engine
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Full REST API for tasks, assets, findings, and system control
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What Artex Does
+
+Artex orchestrates a team of LLM-powered agents to autonomously explore web targets, map assets, and identify vulnerabilities — all without manual guidance after the initial task is created.
+
+<CardGroup cols={3}>
+  <Card title="Dual-Graph Engine" icon="diagram-project">
+    A global **Asset Graph** tracks discovered infrastructure while a per-task **Exploration Graph** records the reasoning chain: goals → intents → facts → findings.
+  </Card>
+  <Card title="Human-in-the-Loop" icon="user-shield">
+    An intercept/approval gate pauses destructive tool calls for human review before execution. Full MITM traffic recording captures every request.
+  </Card>
+  <Card title="Extensible Tooling" icon="puzzle-piece">
+    Extend agents with custom skills, MCP servers (Streamable HTTP or SSE), and custom tools. Sync assets from ScopeSentry for seamless recon hand-off.
+  </Card>
+</CardGroup>
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card title="Architecture Overview" icon="sitemap" href="/concepts/architecture">
+    Understand the layered Go backend, engine scheduler, and agent roles
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/database">
+    Configure PostgreSQL, LLM providers, and environment variables
+  </Card>
+  <Card title="Features" icon="stars" href="/features/tasks">
+    Tasks, assets, findings, traffic recording, intercept, notifications, and more
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment/docker">
+    Deploy with Docker Compose, prebuilt binary, or from source
+  </Card>
+</CardGroup>
+
+## Key Highlights
+
+<Steps>
+  <Step title="Create a task">
+    Point Artex at a target scope — a domain, IP range, or list of URLs. The goals agent automatically decomposes your objective into concrete exploration targets.
+  </Step>
+  <Step title="Watch agents explore">
+    The planner dispatches intents to worker agents. Each worker uses real tools (bash, HTTP clients, nmap, browser automation) and writes discoveries back to the graph.
+  </Step>
+  <Step title="Review findings">
+    Vulnerability findings appear in the dashboard with full lineage: which intent produced them, what traffic was captured as evidence, and which assets are affected.
+  </Step>
+  <Step title="Retest and report">
+    Trigger the built-in retest agent to verify fixes. Export findings as a structured report or receive real-time push notifications to Slack, Telegram, email, and more.
+  </Step>
+</Steps>
+
+<Note>
+  Artex is licensed under AGPL-3.0 and is intended for local research, code study, and isolated lab environments only. Do not use it against live systems without explicit authorization.
+</Note>

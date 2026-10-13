@@ -1,0 +1,207 @@
+---
+title: "Traffic Recording: MITM Proxy and Evidence Capture"
+sidebarTitle: "Traffic Recording"
+description: "How Artex's built-in MITM proxy intercepts, stores, and searches HTTP/HTTPS traffic, and how captures are attached to vulnerability findings as structured proof."
+---
+
+Artex ships with a transparent **MITM recording proxy** that captures every HTTP and HTTPS exchange made by worker agents during exploration. Because all agent-issued HTTP requests flow through this proxy, every piece of traffic the agents generate — tool calls, web fetches, exploit attempts — is automatically logged with full request and response detail, ready to attach to a finding as evidence.
+
+---
+
+## How the Proxy Works
+
+The recording proxy is a separate listener started alongside the main API server. Workers are configured to route all outbound HTTP through it, and the proxy in turn makes the real request on their behalf while writing the full exchange to a SQLite store.
+
+```bash
+./start.sh -addr :8787 -proxy :8788
+```
+
+The `-proxy` flag sets the proxy listen address. By default it binds only to `127.0.0.1:8788` to avoid exposing an open proxy on other network interfaces.
+
+### HTTPS Interception
+
+The proxy intercepts HTTPS via a **generated CA certificate**. On first startup Artex creates a private CA and stores it in the data directory. Workers trust this CA so their HTTPS requests can be decrypted, recorded, and re-encrypted in transit.
+
+<Warning>
+  The proxy CA certificate is generated locally and is never transmitted anywhere. It is used solely for MITM interception within the Artex environment. Do not import this CA into a production browser or system trust store.
+</Warning>
+
+### What Is Recorded
+
+For every intercepted exchange the proxy writes:
+
+- Full request line, headers, and body
+- Full response status, headers, and body
+- Host, port, and TLS state
+- Timestamp
+
+Large response bodies are stored in a content-addressed blob store to avoid inflating the main index. The index keeps metadata and a hash reference; the full body is fetched on demand.
+
+---
+
+## Traffic List
+
+The traffic page lists all captured exchanges with rich filtering and sorting.
+
+```http
+GET /api/traffic
+GET /api/traffic/hosts
+```
+
+<CardGroup cols={2}>
+  <Card title="Content Search" icon="magnifying-glass">
+    Full-text search across response bodies using a trigram index. Supports arbitrary substrings including CJK text.
+  </Card>
+  <Card title="Path Filter" icon="filter">
+    Filter by request path substring. Useful for narrowing to a specific API endpoint or file.
+  </Card>
+  <Card title="Status Code Filter" icon="hashtag">
+    Exact status code (`200`) or bucket (`2xx`, `4xx`, `5xx`).
+  </Card>
+  <Card title="Response Length Range" icon="ruler-horizontal">
+    Filter by minimum and/or maximum response body length in bytes. Useful for distinguishing error pages from real data.
+  </Card>
+</CardGroup>
+
+**Sorting** is available by:
+- **Time** (default) — most recent first
+- **Status code**
+- **Response length**
+
+Sort preferences are persisted locally per browser.
+
+---
+
+## Traffic Detail
+
+Clicking any traffic row opens a detail view with the complete HTTP exchange.
+
+```http
+GET /api/traffic/exchange
+GET /api/traffic/blob
+```
+
+The detail view renders:
+- Request line with method, path, and HTTP version
+- Request headers with the `Host` header added if absent
+- Request body (decoded from content-encoding where possible)
+- Response status line
+- Response headers
+- Response body with syntax highlighting for JSON, HTML, and XML
+
+For very large bodies, a streaming download is available instead of inline rendering.
+
+---
+
+## Clearing Traffic
+
+Traffic records accumulate continuously during active tasks. Artex provides two ways to remove them.
+
+<Tabs>
+  <Tab title="Delete All Traffic">
+    The **Clear All** button on the traffic page deletes every recorded exchange, regardless of the current filter. After deletion Artex performs a full SQLite compaction and reports how much disk space was recovered.
+
+    ```http
+    DELETE /api/traffic/all
+    ```
+
+    <Note>
+      Traffic captures that are already bound to a finding as evidence live in a separate evidence store and are **not** affected by "Clear All". Bound evidence is preserved independently of the main traffic index.
+    </Note>
+  </Tab>
+  <Tab title="Delete by Host">
+    Remove all traffic for a specific host:
+
+    ```http
+    DELETE /api/traffic/hosts
+    ```
+  </Tab>
+  <Tab title="Delete Selected">
+    Delete individual exchange records:
+
+    ```http
+    DELETE /api/traffic
+    ```
+  </Tab>
+</Tabs>
+
+### SQLite Vacuum Behaviour
+
+The traffic index is stored in SQLite. When records are deleted, SQLite's default behaviour leaves the freed pages as dead space in the file — the file does not shrink immediately.
+
+Artex addresses this in two ways:
+
+- **New databases** are created with `auto_vacuum=incremental`. After every delete operation Artex runs an incremental background vacuum in small chunks, releasing write locks between each chunk so traffic recording is not interrupted.
+- **Existing databases** (created before this feature was added) do not support incremental vacuum. The startup log prints a one-line notice in this case. For these databases, use **Clear All** once — that operation converts the index to incremental-vacuum mode so subsequent deletes self-manage.
+
+<Info>
+  In benchmarks, a 6 MB response body that grew the trigram index to 16 MB shrank back to 104 KB after deletion with incremental vacuum enabled.
+</Info>
+
+---
+
+## Traffic as Finding Evidence
+
+Traffic captures are the primary form of machine-readable proof in Artex findings. Workers are expected to search the traffic store for captures that genuinely support a finding conclusion and reference them by ID.
+
+### Attaching Traffic to a Finding
+
+```http
+POST /api/exploration/findings/{id}/retests   ← retest agent also auto-binds
+```
+
+Workers call `report_finding` with a `traffic_refs` array:
+
+```json
+{
+  "traffic_refs": [
+    {
+      "traffic_id": "abc123",
+      "role": "proof",
+      "note": "POST request with injected payload; response shows DB error."
+    },
+    {
+      "traffic_id": "def456",
+      "role": "baseline",
+      "note": "Same endpoint without payload — returns 200 normally."
+    }
+  ]
+}
+```
+
+Traffic bindings support four roles:
+
+| Role | Purpose |
+|---|---|
+| `proof` | The primary capture demonstrating the vulnerability |
+| `baseline` | A normal request for contrast |
+| `verification` | A follow-up capture confirming reproducibility |
+| `supporting` | Auxiliary evidence providing context |
+
+Each binding can also carry a `note` explaining how that specific capture supports the vulnerability conclusion.
+
+### Report Agent Auto-Binding
+
+The built-in report agent automatically searches for relevant traffic and binds it before writing a finding report. This means even findings that the worker did not manually annotate with traffic IDs may arrive in the findings table with evidence already attached.
+
+---
+
+## Proxy Configuration
+
+The proxy listen address is set at startup and cannot be changed without a restart.
+
+```bash
+# Default: binds to 127.0.0.1:8788 only
+./start.sh -proxy :8788          # listen on all interfaces
+./start.sh -proxy 127.0.0.1:8788 # loopback only (default)
+```
+
+When a **global egress proxy** is configured in System Settings, the recording proxy uses it as an upstream — traffic is still fully recorded by the MITM layer and then forwarded through the upstream proxy, so neither recording nor anonymisation is sacrificed.
+
+### Using the Proxy in Agent Tools
+
+Workers' `Bash` and HTTP tools are automatically configured to route through the recording proxy. No per-tool configuration is needed. The proxy CA certificate path is injected into the agent environment so HTTPS requests succeed without certificate errors.
+
+<Tip>
+  If you are running Artex in Docker, ensure the proxy port is exposed if you want to use it with external tools. The default `docker-compose.yml` exposes both `8787` (API + UI) and `8788` (proxy).
+</Tip>

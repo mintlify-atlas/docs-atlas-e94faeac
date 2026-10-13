@@ -1,0 +1,122 @@
+---
+title: "Engine Lifecycle: Event-Driven Loop and Intent State Machine"
+sidebarTitle: "Engine Lifecycle"
+description: "Learn how Artex's event-driven engine loop coordinates plannerLoop and worker goroutines, manages intent states, and handles task control operations."
+---
+
+The Artex engine is a pure event-driven system. Nothing polls for new work on a timer — instead, every meaningful change to the dual graph emits a notification that wakes the planner, which decides whether to dispatch new work. Workers pick up that work immediately, and when they finish they emit another notification, closing the loop. This architecture means the system is both reactive (new findings trigger immediate re-planning) and efficient (the planner only runs when there is actually something new to reason about).
+
+## Starting the Engine
+
+When a task is created or the server restarts with existing tasks, the engine's `Run` method is called for that task. `Run` registers exactly `1 + N` goroutines in a task-scoped `taskRuntime` — one `plannerLoop` and N `workerLoop` goroutines, where N is the worker count from System Settings (default 3). All goroutines are children of the same `context.Context`, so task deletion, pause, and shutdown can cancel all of them atomically.
+
+```go
+// From server/engine.go — Run starts the planner + N workers
+func (e *Engine) Run(ctx context.Context, t *Task) {
+    workers := e.m.Workers()
+    rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
+    runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
+    for i := 0; i < workers; i++ {
+        name := fmt.Sprintf("work#%d", i+1)
+        runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
+    }
+}
+```
+
+If the task already has active intents when it starts (a restart recovering in-flight work), the engine skips the initial `Notify()` call so workers can reclaim those intents directly without waiting for a planning round first.
+
+## The plannerLoop: Event Processing
+
+The planner goroutine is not constantly running an LLM. It blocks on a `select` between two channels: the task's `notify` channel (for edge-triggered wake-ups from graph changes) and a `heartbeat` timer (for periodic background checks, default every 10 minutes).
+
+When either fires, the loop calls `runRound`. Before actually invoking the LLM, `runRound` applies a **debounce** of 800 milliseconds — it drains any additional notifications that arrive during that window, coalescing a burst of changes (multiple workers finishing near-simultaneously, for example) into a single planning round.
+
+After debouncing, the planner checks a series of guards before calling `planner.Plan`:
+
+1. **LLM availability** — If no provider is configured, skip silently. The loops keep running; the task will resume automatically once a provider is set from the UI.
+2. **Paused state** — If the task is user-paused, skip.
+3. **Delete barrier** — If the task is being deleted, skip.
+4. **Terminal status** — If the task is already `done` or `failed`, skip. Resuming an already-complete task does not re-trigger planning.
+5. **Settling** — If the task has entered timeout settlement mode, skip normal rounds. The terminal round is driven directly by the deadline coordinator.
+6. **Goalless branch** — If the task has no open goals (the operator sent intents directly without going through goal decomposition), the planner does not run. Instead, the engine monitors the frontier directly: when all intents are done and none are open, the task transitions to `done` automatically.
+
+Only after passing all guards is `planner.Plan` called. The round emits a `kind=round` activity record as a separator in the UI transcript, then calls `t.drainTriggers()` to collect all accumulated trigger events (worker completions, findings, goal additions) that have queued up since the last round. These triggers are passed to `planner.Plan` so the LLM begins each round knowing exactly what changed.
+
+## The workerLoop: Claiming and Executing Intents
+
+Each worker goroutine runs its own tight loop. In each iteration it calls `claimNext`, which fetches the top-priority open intents from the frontier (ordered by `priority DESC, id ASC`) and attempts an atomic claim on each until one succeeds. The claim atomically transitions the intent from `open` to `running` and records the worker's name as the owner. If no intent is claimable, the worker sleeps for 800 ms and tries again.
+
+Once a worker holds a claimed intent, it calls `runIntent`, which:
+
+1. Creates a per-work child context derived from the task execution context, allowing the intent to be killed independently from the task.
+2. Registers the work in the engine's `work` map so the planner can kill or steer it by intent ID.
+3. Wraps the guard's hooks with `steerHooks` so that before each tool call the worker checks for queued steering messages from the planner.
+4. Calls `worker.Execute` (or `ExecuteWithMessage` for human-in-the-loop continuation).
+5. After `Execute` returns, determines the final state based on the terminal reason and any cancellation causes, writes the state to the database, and calls `t.NotifyDone(intent.ID)` to wake the planner with a trigger event describing this specific completion.
+
+## The Full Cycle: Step by Step
+
+The following describes one complete cycle from graph change to next planning round:
+
+**Step 1 — Graph change occurs.** A worker finishes executing its intent and calls `record_fact` or `report_finding`. This write goes to PostgreSQL and the worker calls `t.NotifyDone(intentID)`, sending a `TriggerEvent{Kind: "done", IntentID: intentID}` to the task's trigger queue and signaling the `notify` channel.
+
+**Step 2 — plannerLoop receives the notification.** The edge-triggered `case <-t.notify` fires. The 800 ms debounce timer starts. Any additional notifications (another worker finishing simultaneously, a finding callback) that arrive during this window are drained without additional rounds.
+
+**Step 3 — Pre-flight guards pass.** The planner is configured, the task is not paused, not deleting, not terminal, not settling, and has open goals.
+
+**Step 4 — Planner round begins.** A `kind=round` marker is emitted. Accumulated trigger events are drained from the queue. `planner.Plan` is called with the pre-injected `graph_overview` snapshot and the trigger events spelled out at the top of the user message.
+
+**Step 5 — Planner reads the situation.** The LLM reads the graph overview (goals, open intents, recent facts, findings, hints, coverage) and the trigger summary ("worker #42 finished: found SQL injection at /api/login, new facts: #87"). It consults its persistent `todolist` if one exists.
+
+**Step 6 — Planner dispatches intents (or terminates).** If there are new exploration directions warranted by the facts, the planner calls `add_intent` (batch mode) to write them as `open` nodes in the frontier. If a goal is provable, it calls `prove_goal`. When the last goal is marked `met`, `tsx.GoalMet` is set to `true` and the engine transitions the task to `done`, cancelling all in-flight worker contexts.
+
+**Step 7 — Workers claim the new intents.** Worker goroutines poll `claimNext` continuously. Any new `open` intent is claimed immediately (within ≤800 ms of becoming open, the worker's poll interval).
+
+**Step 8 — Worker executes and writes back.** The worker runs its full exploration, writes assets, facts, and findings, then exits. `t.NotifyDone` fires, and the cycle returns to Step 1.
+
+## Intent States
+
+An intent moves through a well-defined state machine:
+
+| State | Meaning |
+|---|---|
+| `open` | In the frontier queue, claimable by any worker. |
+| `running` | Claimed by a worker; an LLM session is active. |
+| `done` | Worker completed normally and wrote back results. |
+| `exhausted` | Worker hit its turn or time budget mid-execution. The SDK's settlement phase ran, so partial results were written back. The planner can re-dispatch with a "continue from where you left off" summary. |
+| `blocked` | Worker encountered a model or network error and could not complete. May be automatically retried (model errors get up to 2 retries with 3-second backoff). |
+| `stopped` | Killed by the planner's `kill_work` tool, cancelled by task completion, or stopped by the operator. Not automatically re-dispatched. |
+| `paused` | Paused by the operator at the individual intent level via the UI. The worker's LLM conversation transcript is preserved; the intent will resume from where it left off when the operator un-pauses. |
+
+<Info>
+`exhausted` and `blocked` have different meanings that matter for the planner. `exhausted` means "tried but ran out of budget" — the direction is worth continuing. `blocked` typically means "external error" — the direction is usually worth retrying as-is. The planner's system prompt instructs it to check `get_worker_trace` and `get_worker_output` for either state before deciding how to re-dispatch.
+</Info>
+
+## Task Control Operations
+
+**Pause** — `engine.Pause(taskID, cause)` marks the task paused and cancels the current exec context. Any in-flight `planner.Plan` or `worker.Execute` call receives the cancellation. Workers in the middle of an intent transition it back to `open` (so it can be re-claimed on resume) or to `paused` if the pause was requested at the individual intent level. The planner and worker goroutines keep running but skip all work while `IsPaused` is true.
+
+**Resume** — `engine.Resume(task)` clears the paused flag and calls `task.Notify()` to trigger a fresh planning round. The next `execContextFor` call creates a fresh, uncancelled context.
+
+**Stop/Delete** — `engine.BeginDelete(taskID)` installs a delete barrier, pauses the task, and cancels the exec context. After all in-flight operations drain (verified via the `inflight` counter), `StopTask` cancels the task-scoped runtime context, waits for all goroutines via `wg.Wait()`, and removes all engine state for the task.
+
+**Drain** — During timeout settlement, the engine enters a "settling" state that prevents the planner from starting new rounds and stops workers from claiming new intents. In-flight workers complete their current execution and their SDK settlement phases run, writing back partial results before the engine declares the task timed out.
+
+## Timeout Handling
+
+Tasks can be created with a wall-clock timeout. On the first actual LLM call (planner or worker), the engine stamps `first_run_at` and computes the absolute deadline. A deadline coordinator goroutine monitors this deadline. When it fires, the engine:
+
+1. Sets the task to "settling" mode — no new intents are claimed.
+2. Injects a terminal planning round with a special "final wrapup" prompt, instructing the planner to do only goal adjudication without dispatching new intents.
+3. Waits for in-flight workers to drain via the `inflight` counter.
+4. Transitions the task to `timeout` status.
+
+Each worker and planner run is also given a `MaxDuration` clamped to the remaining time before the task deadline. When that fires mid-run, the SDK's settlement phase takes over: Bash is hidden from the model and a settlement prompt asks it to write back everything it has found so far. This ensures that results accumulated up to the timeout are never lost.
+
+## How prove_goal Terminates the Loop
+
+The normal termination path for a task is the planner calling `prove_goal` on each goal as the evidence accumulates. When `prove_goal` is called on the last open goal, `tsx.GoalMet` is set to `true` and `tsx.Reason` records the explanation. `planner.Plan` returns `(met=true, reason, nil)` to the engine.
+
+The engine then calls `SetTaskStatus(taskID, "done")` and `cancelExec(taskID, AbortGoalMet)`. The `cancelExec` cancels all in-flight worker contexts. Workers that receive this cancellation transition their intents to `stopped` (not `blocked`) and exit. The planner and worker goroutines check `isTerminalStatus` on their next iteration and stop claiming or planning.
+
+The task is now complete. The frontend transitions to showing the findings summary, and no further LLM calls are made for that task.

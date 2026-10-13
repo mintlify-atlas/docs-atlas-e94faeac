@@ -1,0 +1,210 @@
+---
+title: "Artex Environment Variable Reference for All Settings"
+sidebarTitle: "Environment Vars"
+description: "Complete reference for every environment variable Artex reads at startup or build time, with types, defaults, and precedence notes for database, LLM, Docker, and frontend settings."
+---
+
+Artex reads configuration from environment variables, a `config.json` file, and the database — in that priority order. This page documents every environment variable the system recognises, whether it is consumed by the Go backend, the Docker Compose stack, or the Next.js frontend at build time. Variables are grouped by concern.
+
+## PostgreSQL connection
+
+<ParamField body="ARTEX_PG_DSN" type="string">
+  Full PostgreSQL DSN in URL format, e.g.
+  `postgres://artex:pass@127.0.0.1:5432/artex?sslmode=disable`. When set, this
+  variable **overrides every field in `config.json`'s `database` section**,
+  including any `database.dsn` value. This is the recommended approach for
+  container deployments where mounting a config file is inconvenient.
+
+  **Precedence:** `ARTEX_PG_DSN` > `config.json database.dsn` > `config.json` individual fields.
+</ParamField>
+
+## Configuration file location
+
+<ParamField body="ARTEX_CONFIG" type="string" default="config.json next to the binary">
+  Path to the JSON configuration file. Resolution order when this variable is
+  unset:
+
+  1. `config.json` in the current working directory
+  2. `config.json` in the same directory as the binary
+
+  Set this variable to point at a file in a non-standard location, e.g.
+  `ARTEX_CONFIG=/etc/artex/config.json`.
+</ParamField>
+
+## Skills directory
+
+<ParamField body="ARTEX_SKILL_DIR" type="string" default="./skills next to the binary">
+  Root directory for Artex skill subdirectories. Each subdirectory is one skill
+  and must contain a `SKILL.md` descriptor. When unset, Artex falls back to the
+  `skill_dir` field in `config.json`, and then to `<binary directory>/skills/`.
+  The directory is created automatically if it does not exist.
+
+  **Precedence:** `ARTEX_SKILL_DIR` > `config.json skill_dir` > `<binary dir>/skills/`.
+
+  Relative paths are resolved against the current working directory at startup.
+</ParamField>
+
+## LLM provider credentials
+
+<ParamField body="ANTHROPIC_API_KEY" type="string">
+  Anthropic API key. When set and no active LLM profile exists in the database,
+  Artex bootstraps an initial profile using this key with the `anthropic`
+  provider format. Also used directly by the `norma` SDK's LLM layer.
+</ParamField>
+
+<ParamField body="OPENAI_API_KEY" type="string">
+  OpenAI API key. Used when `ARTEX_LLM_PROVIDER` is `openai` or
+  `openai-responses`, or when inferred automatically because no Anthropic key
+  is present. Also applies to any OpenAI-compatible endpoint configured via
+  `ARTEX_LLM_BASE_URL`.
+</ParamField>
+
+## LLM provider settings
+
+<ParamField body="ARTEX_LLM_PROVIDER" type="string">
+  Explicitly selects the provider wire format. Valid values: `anthropic`,
+  `openai`, `openai-responses`. When omitted, the provider is inferred from
+  which API key is set — Anthropic wins if both are present. This variable is
+  only used for the initial bootstrap from environment; subsequent configuration
+  is managed via LLM Profiles in the database.
+</ParamField>
+
+<ParamField body="ARTEX_LLM_MODEL" type="string">
+  Model identifier for the bootstrapped provider, e.g. `claude-sonnet-4-5` or
+  `gpt-4o`. When omitted a per-provider default is selected. Has no effect once
+  an active profile exists in the database.
+</ParamField>
+
+<ParamField body="ARTEX_LLM_BASE_URL" type="string">
+  Custom API endpoint URL. Use this to point Artex at OpenAI-compatible services
+  such as DeepSeek (`https://api.deepseek.com`), Azure OpenAI, or a local
+  Ollama instance (`http://localhost:11434/v1`). Leave unset to use the
+  provider's official endpoint.
+</ParamField>
+
+<ParamField body="ARTEX_LLM_PROXY" type="string">
+  HTTP, HTTPS, or SOCKS5 proxy URL for outbound LLM API calls, e.g.
+  `http://proxy.corp:8080` or `socks5://user:pass@socks.corp:1080`. Useful
+  when the host cannot reach the LLM API directly. Does not affect PostgreSQL
+  connections or other HTTP traffic.
+</ParamField>
+
+## Notifications
+
+<ParamField body="ARTEX_NOTIFY_ALLOW_LOCAL" type="string" default="(unset — loopback delivery blocked)">
+  Set to `1` to allow Artex's notification delivery engine to send webhook or
+  IM notifications to loopback addresses (`127.0.0.1`, `::1`) and private
+  network ranges. By default, delivery to these destinations is blocked as a
+  safety measure. Enable only in isolated lab environments.
+
+  ```bash
+  ARTEX_NOTIFY_ALLOW_LOCAL=1
+  ```
+</ParamField>
+
+## Docker Compose variables
+
+These variables are read by `docker-compose.yml` and used to configure the
+`postgres` service container. They are not read by the Artex binary directly;
+the compose file assembles `ARTEX_PG_DSN` from them and injects it into the
+`artex` service.
+
+<ParamField body="ARTEX_TAG" type="string" default="latest">
+  Docker image tag for the `artex` service, e.g. `latest` or `v0.3.3`. Set
+  this in `.env` before running `docker compose up` to pin a specific release.
+  Used by `docker compose pull artex` to fetch the correct image.
+</ParamField>
+
+<ParamField body="POSTGRES_USER" type="string" default="artex">
+  PostgreSQL superuser name created inside the `postgres` container.
+</ParamField>
+
+<ParamField body="POSTGRES_PASSWORD" type="string">
+  Password for `POSTGRES_USER`. **Required** — the compose stack will not start
+  without a value here. The `install.sh` script can generate a random password
+  automatically.
+</ParamField>
+
+<ParamField body="POSTGRES_DB" type="string" default="artex">
+  Name of the database created inside the `postgres` container on first
+  initialisation.
+</ParamField>
+
+## Frontend build-time variables
+
+The following variables are consumed by `next build` (or `npm run build:static`) and **baked into the static bundle at build time**. Setting them at container runtime has no effect — they must be present during the build step.
+
+<ParamField body="NEXT_PUBLIC_SSE_BASE" type="string" default="(same-origin — variable unset)">
+  Override the base URL used by the frontend to connect to the SSE activity
+  stream. When unset, the frontend connects to the same origin the page was
+  served from, which is the correct behaviour for virtually all deployments
+  (the Go binary serves both the API and the frontend on the same port).
+
+  Only set this variable if the SSE endpoint is on a **different origin** than
+  the frontend — for example, when the Next.js bundle is deployed to a CDN or
+  static host while the backend runs elsewhere. In that case, set
+  `NEXT_PUBLIC_SSE_BASE=https://api.your-domain.com` at build time.
+
+  <Warning>
+    This variable is fixed at build time (`next build`). Changing it in a
+    running container or after the static export has been generated has no
+    effect. Rebuild the frontend bundle to apply a new value.
+  </Warning>
+</ParamField>
+
+<ParamField body="NEXT_PUBLIC_MOCK" type="string" default="(unset — live backend)">
+  Set to `1` to enable mock data mode for the frontend. In this mode, the UI
+  renders with hard-coded sample data and makes no real API calls to the
+  backend. Intended for frontend-only previews, the live demo site, and UI
+  development without a running backend.
+
+  ```bash
+  # Start frontend-only preview (no backend needed)
+  cd web && NEXT_PUBLIC_MOCK=1 npm run dev
+
+  # Build a static export for a demo deployment
+  cd web && NEXT_PUBLIC_MOCK=1 npm run build:static
+  ```
+</ParamField>
+
+## Example `.env` file
+
+The following shows a complete `.env` for a Docker Compose deployment, based on `.env.example` in the repository:
+
+```bash .env
+# Docker image tag (set to a specific release to pin the version)
+ARTEX_TAG=latest
+
+# PostgreSQL — used by the postgres container and assembled into ARTEX_PG_DSN
+POSTGRES_USER=artex
+POSTGRES_PASSWORD=change-me-please
+POSTGRES_DB=artex
+
+# LLM — choose one provider (or configure later in the UI)
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=
+
+# Optional LLM overrides
+ARTEX_LLM_PROVIDER=
+ARTEX_LLM_MODEL=
+ARTEX_LLM_BASE_URL=
+ARTEX_LLM_PROXY=
+```
+
+For a local binary deployment (non-Docker), set only the variables relevant to your setup:
+
+```bash
+# Minimal local setup
+export ARTEX_PG_DSN="postgres://artex:yourpass@127.0.0.1:5432/artex?sslmode=disable"
+export ANTHROPIC_API_KEY="sk-ant-..."
+./start.sh
+```
+
+## Precedence summary
+
+| Setting | Priority order |
+|---|---|
+| PostgreSQL DSN | `ARTEX_PG_DSN` → `config.json database.dsn` → assembled from `config.json` fields |
+| Config file path | `ARTEX_CONFIG` → CWD `config.json` → binary-dir `config.json` |
+| Skills directory | `ARTEX_SKILL_DIR` → `config.json skill_dir` → `<binary dir>/skills/` |
+| LLM provider | Active DB profile → `ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / etc. |

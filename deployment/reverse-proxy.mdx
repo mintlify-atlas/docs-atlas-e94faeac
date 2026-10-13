@@ -1,0 +1,88 @@
+---
+title: "Serve Artex Securely Behind an Nginx Reverse Proxy"
+sidebarTitle: "Reverse Proxy"
+description: "Proxy Artex over HTTPS with Nginx. Covers SSE buffering, port layout, startup flags, global update proxy, and the NEXT_PUBLIC_SSE_BASE build-time caveat."
+---
+
+Artex serves the frontend, REST API, and the SSE event stream all from a single port (default `8787`). For public-facing deployments, you only need to expose port `443` externally and reverse-proxy it to the backend. Because the activity stream uses Server-Sent Events — a long-lived, streaming connection — the proxy **must** have response buffering disabled, or the browser will appear to connect but never receive any events.
+
+## Port Layout
+
+| Port | Bound to | Purpose |
+|---|---|---|
+| `8787` | `0.0.0.0` (configurable) | Frontend (Next.js static files), REST API (`/api/*`), SSE (`/api/events`) |
+| `8788` | `127.0.0.1` | Traffic-recording MITM proxy — **do not expose publicly** |
+
+<Warning>
+  Port `8788` is the traffic-recording proxy. It is bound to `127.0.0.1` by default in the Docker Compose configuration. Never forward this port to the public internet.
+</Warning>
+
+## Nginx Configuration
+
+The following Nginx server block terminates TLS on port `443` and forwards all traffic to Artex on `8787`. The SSE-critical directives are highlighted in comments.
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name your.domain.com;
+
+    ssl_certificate     /etc/ssl/certs/your.domain.com.crt;
+    ssl_certificate_key /etc/ssl/private/your.domain.com.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE: disable all buffering so events reach the browser immediately.
+        # Without these, the proxy holds the response in memory and the
+        # activity stream appears to connect but never delivers events.
+        proxy_buffering      off;
+        proxy_cache          off;
+        proxy_read_timeout   3600s;
+
+        # SSE requires HTTP/1.1 keep-alive; clear the Connection header
+        # so upstream keep-alive is not inadvertently closed.
+        proxy_http_version 1.1;
+        proxy_set_header   Connection "";
+    }
+}
+```
+
+<Note>
+  `proxy_read_timeout 3600s` prevents Nginx from closing idle SSE connections after the default 60-second read timeout. Agent runs can be long-lived; a lower timeout will drop the event stream mid-task.
+</Note>
+
+## SSE Buffering Explained
+
+SSE is a persistent HTTP/1.1 connection over which the server pushes newline-delimited events. Most reverse proxies buffer the response body before forwarding it to the client. With a streaming response there is no end-of-body marker, so the buffer fills up or the timeout fires and the connection is dropped. Setting `proxy_buffering off` tells Nginx to relay bytes to the client as soon as they arrive, which is what SSE requires.
+
+<Tip>
+  If the Artex dashboard shows the activity feed spinning indefinitely after connecting, the most common cause is a proxy that has buffering enabled. Check every layer of your proxy chain (Nginx, load balancer, CDN) and disable buffering on each one.
+</Tip>
+
+## Startup Flags
+
+Pass `-addr` and `-proxy` to `start.sh` to change the listen addresses. The wrapper forwards all arguments directly to the Artex binary:
+
+```bash
+# Frontend + API on :8787, traffic proxy on :8788 (defaults)
+./start.sh -addr :8787 -proxy :8788
+
+# Listen on a different port or restrict to localhost
+./start.sh -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788
+```
+
+In Docker, these flags are set via `CMD` in the Dockerfile and are already configured to the default values. Override them with a custom `command:` entry in your Compose file if needed.
+
+## NEXT_PUBLIC_SSE_BASE
+
+In the default setup the frontend and the SSE endpoint share the same origin, so no extra configuration is needed. The variable `NEXT_PUBLIC_SSE_BASE` only becomes relevant when the SSE endpoint must be reachable from a **different origin** than the page — for example, if you put the frontend behind one subdomain and expose the API on another.
+
+<Warning>
+  `NEXT_PUBLIC_SSE_BASE` is baked into the JavaScript bundle at `next build` time. Setting or changing this environment variable on a running container has **no effect**. To change it you must rebuild the frontend and recompile the binary (or rebuild the Docker image) with the variable present in the build environment.
+</Warning>
+
+## Global Proxy for Update Downloads
+
+Artex downloads release archives exclusively from GitHub over HTTPS. If your server cannot reach GitHub directly, configure a global HTTP proxy in **System Settings → Version & Updates**. The update pipeline (both one-click updates and the background download) will route requests through this proxy. The proxy setting is also respected by other outbound connections that Artex initiates.

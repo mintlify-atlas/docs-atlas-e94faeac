@@ -1,0 +1,138 @@
+---
+title: "Model Context Protocol (MCP) Integration in Artex"
+sidebarTitle: "MCP Integration"
+description: "Connect external MCP servers to Artex agents over Streamable HTTP or legacy SSE transports, with skill-declared server unlocking and automatic output truncation."
+---
+
+The Model Context Protocol (MCP) is an open standard for exposing tools to LLM agents. Any software that implements an MCP server can publish a set of typed tools that agents discover at runtime and call like any other tool. Artex acts as an MCP client — you configure MCP servers in the UI and their tools appear in your agents' tool lists automatically under a predictable naming convention.
+
+## How MCP Tools Appear to Agents
+
+When Artex connects to an MCP server named `my-scanner`, each tool the server exposes is renamed to:
+
+```text
+mcp__my-scanner__<tool-name>
+```
+
+For example, a tool called `scan_target` on the `my-scanner` server becomes `mcp__my-scanner__scan_target` in the agent's tool list. This three-segment prefix makes MCP tools immediately distinguishable from built-in tools and prevents name collisions across multiple servers.
+
+## Supported Transports
+
+Artex supports two MCP transports:
+
+<CardGroup cols={2}>
+  <Card title="Streamable HTTP (http)" icon="bolt">
+    The current MCP transport standard. The client sends JSON-RPC requests over HTTP POST and receives responses in a streaming fashion. Select `http` when connecting to a modern MCP server.
+  </Card>
+  <Card title="Legacy SSE (sse)" icon="signal">
+    The older Server-Sent Events transport, still used by many existing MCP servers. Uses two separate HTTP paths: a `GET` endpoint for the event stream and a message endpoint for outgoing JSON-RPC requests. Select `sse` for servers that do not yet support Streamable HTTP.
+  </Card>
+</CardGroup>
+
+### SSE Transport Details
+
+Legacy SSE servers expose two paths:
+
+| Path | Purpose |
+|---|---|
+| `GET /sse` | Opens the Server-Sent Events stream. The server sends `endpoint` events that tell the client where to POST messages. |
+| `POST /message?sessionId=...` | Receives outgoing JSON-RPC requests from the client. The `sessionId` is issued by the server via the event stream. |
+
+When configuring an SSE server in Artex, set the **URL** field to the `/sse` path (e.g. `https://mcp.example.com/sse`). Artex will discover the message endpoint automatically from the `endpoint` event.
+
+For servers that require authentication, add an `Authorization` header in the server's header configuration:
+
+```text
+Authorization: Bearer <your-token>
+```
+
+## Configuring MCP Servers
+
+MCP servers are managed under **System → Settings → MCP Servers**, or via the REST API.
+
+<Steps>
+  <Step title="Open the MCP settings">
+    Navigate to **System → Settings** and find the **MCP Servers** section.
+  </Step>
+  <Step title="Add a server">
+    Click **Add MCP Server** and fill in:
+    - **Name** — a short identifier used in tool names (e.g. `scopesentry`). Becomes the `<server>` segment of `mcp__<server>__<tool>`.
+    - **URL** — the server endpoint. For SSE servers, use the `/sse` path.
+    - **Transport** — `http` (Streamable HTTP) or `sse` (legacy SSE).
+    - **Headers** — optional key-value pairs sent with every request (e.g. `Authorization: Bearer token`).
+  </Step>
+  <Step title="Save and discover tools">
+    After saving, Artex automatically fetches the server's tool list. The discovered tools appear in the MCP server entry.
+  </Step>
+</Steps>
+
+### API Reference
+
+```bash
+GET    /api/mcp              # list all configured MCP servers
+POST   /api/mcp              # create or update a server
+DELETE /api/mcp/{id}         # remove a server
+GET    /api/mcp/{id}/tools   # list tools for a specific server
+POST   /api/mcp/{id}/refresh # re-fetch the tool list from the server
+```
+
+## Refreshing Tool Lists
+
+If an MCP server adds or removes tools after initial configuration, use the **Refresh** button in the UI or call `POST /api/mcp/{id}/refresh` to re-fetch the current tool list. Artex also automatically discovers tool lists for newly configured servers on startup.
+
+## Skill-Declared MCP Servers
+
+MCP servers can be marked as **deferred** — they exist in the configuration but their tools are not added to the agent's tool list until explicitly unlocked. The primary mechanism for unlocking a deferred server is through a [skill](/features/skills).
+
+A `SKILL.md` file can declare required MCP servers in its frontmatter `mcps` field:
+
+```yaml
+---
+name: scopesentry
+description: Use ScopeSentry platform tools for asset discovery and scanning.
+mcps:
+  - scopesentry-mcp
+---
+```
+
+When an agent invokes this skill, Artex:
+
+1. Unlocks the `scopesentry-mcp` server for the current session.
+2. Adds `mcp__scopesentry-mcp__*` tools to the session's available tool set.
+3. Appends the newly available tool names to the skill's acknowledgement message.
+
+This design keeps infrequently-used MCP tools out of the agent's context window (and therefore out of the context compaction budget) until they are actually needed. For a large MCP server with dozens of tools, deferring it until its skill is invoked can meaningfully reduce per-turn token costs.
+
+<Tip>
+If you want a set of MCP tools always available without requiring an explicit skill invocation, configure the server normally without marking it as deferred. Its tools will be included in every agent's tool list from the start.
+</Tip>
+
+## TLS and Self-Signed Certificates
+
+The HTTP transport supports skipping TLS certificate verification. This is useful when connecting to an MCP server that uses a self-signed or internal CA certificate. Enable the **Skip TLS Verification** option on the server configuration to bypass certificate validation for that server.
+
+<Warning>
+Disabling TLS verification removes protection against man-in-the-middle attacks on the MCP connection. Only use this option in isolated lab environments where you control both ends of the connection.
+</Warning>
+
+## Tool Output Truncation
+
+MCP tool calls can return large responses — for example, a port scanner returning thousands of lines of output. Artex caps all MCP tool output via `actool.Capture` to prevent large results from filling the agent's context window.
+
+| Setting | Default | Description |
+|---|---|---|
+| `MaxOutputChars` | 30,000 characters | Maximum characters returned from any single MCP tool call. Output beyond this limit is truncated. |
+| `ToolOutputDir` | (session work dir) | When configured, the full output is written to disk. The tool result contains the first portion of the output plus a file path the agent can read for the remainder. |
+
+This cap applies uniformly across all MCP servers and all HTTP-based custom tools. The truncation threshold is configurable per session.
+
+## Visibility Controls
+
+Each MCP server and each individual MCP tool can be enabled or disabled per agent. A disabled server's tools do not appear in that agent's tool list.
+
+```bash
+GET  /api/visibility/{kind}/{id}   # get visibility for a resource (kind: mcp)
+POST /api/visibility/toggle        # toggle visibility for an agent
+```
+
+This lets you, for example, expose a web-scraping MCP server only to worker agents while keeping it hidden from the planner.

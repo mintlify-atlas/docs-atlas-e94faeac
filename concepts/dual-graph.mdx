@@ -1,0 +1,88 @@
+---
+title: "Dual-Graph Architecture: Asset Graph and Exploration Graph"
+sidebarTitle: "Dual Graph"
+description: "Understand how Artex's two linked graphs — a global Asset Graph and a per-task Exploration Graph — separate what exists from how it was tested."
+---
+
+Artex separates two fundamentally different questions into two independently managed graphs. The first question is "what assets exist?" — domains, IP addresses, services, endpoints, and the relationships between them. The second question is "what happened during this particular test?" — goals, exploration directions, facts uncovered, vulnerabilities found, and the chain of reasoning that connected them. Keeping these graphs distinct means asset knowledge accumulates globally across tasks while each task's exploration history stays self-contained and traceable.
+
+The two graphs are linked at precise points called **anchors**, so you can always navigate from an exploration outcome back to the concrete asset it affected, or from an asset forward to every task that has tested it.
+
+## The Asset Graph (Global)
+
+The Asset Graph is the system's shared truth about infrastructure. It persists across tasks — when two different tasks discover the same subdomain, they write to the same asset node rather than creating duplicates. The graph is structured in a parent-child hierarchy:
+
+```
+root_domain
+  └── subdomain
+        └── ip
+              └── service
+                    └── app
+                          └── endpoint
+```
+
+Each node type represents a different kind of infrastructure resource. A `root_domain` such as `example.com` owns subdomains. A `subdomain` resolves to one or more `ip` nodes. An `ip` carries `service` nodes (port + protocol combinations). A `service` may host one or more `app` nodes (web applications), and each `app` exposes `endpoint` nodes (specific URL paths and parameters).
+
+All assets belong to **companies** — the organizational boundary Artex uses for scoping. An asset is always owned by a company, and task scope is anchored to companies, root domains, subdomains, IPs, or CIDR ranges. When workers call `insert_assets`, the system computes deduplication keys automatically based on type-specific uniqueness rules (e.g. `(company_id, domain)` for subdomains), so agents never need to handle deduplication themselves.
+
+The asset graph feeds two important features. First, the **coverage map** in the frontend visualizes assets in scope as a force-directed graph with tested nodes highlighted. Second, the planner's `graph_overview` tool surfaces a `coverage` block showing what percentage of in-scope assets have been touched by facts, by type — giving the planner a denominator to work toward.
+
+## The Exploration Graph (Per-Task)
+
+The Exploration Graph captures everything that happened in a single task. Unlike the asset graph, each task owns its own independent exploration graph; there is no cross-task sharing of exploration nodes (though the planner can read related tasks' graphs through a read-only inheritance mechanism).
+
+The node types are:
+
+| Node kind | Meaning |
+|---|---|
+| `goal` | A discrete, verifiable objective for the task. Created by the goals decomposer at task start, or added by the operator via the main agent. State: `open` or `met`. |
+| `intent` | An exploration direction dispatched by the planner into the frontier queue. Workers claim intents. State: `open`, `running`, `done`, `exhausted`, `blocked`, `stopped`. |
+| `fact` | An exploration result or conclusion written back by a worker. Includes both positive findings (fingerprints, discovered endpoints) and negative conclusions (port closed, parameter not injectable). |
+| `finding` | A confirmed vulnerability with evidence, severity, and vuln class. Written by workers via `report_finding`. Dual-written to the standalone findings table which survives task deletion. |
+| `hint` | A strategic directive added by the operator or the main agent to steer future planning rounds. Read by the planner every wake-up via the `graph_overview` tool. |
+
+These nodes connect through typed edges that form the **blood-lineage chain** — the full derivation history from initial goal to final evidence:
+
+| Edge relation | Meaning |
+|---|---|
+| `spawns` | A goal or origin fact spawned an intent. |
+| `derived_from` | An intent was derived from one or more facts or findings (its upstream justification). |
+| `yields` | An intent produced a fact or finding (its downstream result). |
+| `proves` | A fact or finding proves a goal met. |
+
+This lineage makes it possible to answer questions like "which facts led the planner to generate intent #42?", "what did intent #42 produce?", and "which finding ultimately proved goal #7?" entirely from graph traversal.
+
+## Anchors: Linking the Two Graphs
+
+Anchors are the join points between the two graphs. The table `exploration_anchors(node_id, asset_id)` associates any exploration node — an intent, a fact, or a finding — with one or more asset graph nodes.
+
+When the planner dispatches an intent, it supplies `asset_ids` in the intent payload. These asset IDs become the intent's anchors, identifying exactly which assets that exploration direction targets. When a worker writes back facts and findings, it supplies `asset_ids` on those nodes too, anchoring each result to the assets it directly concerns.
+
+This bidirectional linkage enables two complementary views:
+
+- **From exploration to assets**: Given an intent or fact, you can ask "which assets does this touch?" — useful for understanding scope and preventing redundant work.
+- **From assets to exploration**: Given an asset, you can ask "which intents in this task targeted it, and what did they find?" — this is what powers the asset coverage visualization.
+
+<Note>
+An anchor records **lineage and provenance**, not visibility. The asset graph is globally shared regardless of anchors. An anchor on an intent simply means "this intent is about these assets" — it does not restrict which tasks can read those assets.
+</Note>
+
+## Planner vs. Worker Division of Responsibility
+
+The two graphs have a clean division of labor aligned with the two main agent roles.
+
+The **planner** is the only agent that reads the exploration graph at a strategic level and the only agent that writes intent nodes. When the planner wakes up, it calls `graph_overview` (or reads the pre-injected snapshot) to see the current state of goals, open intents, recent facts, recent findings, and hints. It then decides — based on what's been covered and what's still open — whether to generate new exploration directions. Every intent the planner creates must be anchored to fact or finding nodes as `parent_ids`, enforcing the rule that exploration is always evidence-driven rather than speculative.
+
+**Workers** never read the full exploration graph or make strategic decisions. Each worker receives exactly one intent and is responsible only for executing it. Workers write back to both graphs — `insert_assets` adds to the global asset graph, while `record_fact` and `report_finding` add to the per-task exploration graph chained to the worker's intent via `yields` edges. Once a worker finishes (or exhausts its budget, or is killed), it stops. All strategic interpretation of what the worker found is deferred to the planner's next wake-up.
+
+This separation ensures that the exploration graph is a reliable, auditable record: every intent was created by the planner with explicit justification, every fact traces back to the intent that produced it, and every finding connects to the evidence that confirms it.
+
+## Asset Test Coverage
+
+Coverage is calculated as the ratio of in-scope assets that have been touched by at least one anchor from a fact or intent, to the total number of in-scope assets. "In scope" means the asset is listed in `task_scope` for the current task (or its directly related tasks).
+
+The coverage breakdown is available by asset type (`by_type` in the coverage block) so you can see, for example, that 80% of services have been tested but only 20% of endpoints. The planner reads this in every wake-up and can use the `list_untested_assets` tool to enumerate exactly which assets remain uncovered.
+
+<Warning>
+Coverage is a reference metric, not an exploration target. The system intentionally surfaces it as a lower bound to verify completeness, not as a directive to shallowly touch every asset. High-value attack chains should be followed deeply even when doing so temporarily reduces coverage breadth.
+</Warning>

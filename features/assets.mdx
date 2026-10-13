@@ -1,0 +1,201 @@
+---
+title: "Asset Graph: Nodes, Companies, and Coverage"
+sidebarTitle: "Assets"
+description: "Artex's global Asset Graph — node types, company ownership, filtering, the force-directed coverage visualisation, ScopeSentry sync, and intercept rules."
+---
+
+Artex maintains a single, globally shared **Asset Graph** that persists across all tasks. Unlike the per-task Exploration Graph (which records the reasoning process), the Asset Graph is the authoritative fact-database of what exists in the target environment: domains, IPs, services, and endpoints. Every worker agent reads from and writes to this shared graph, so information discovered in one task is immediately available to agents in other tasks.
+
+---
+
+## Node Types
+
+The Asset Graph uses a strict six-level hierarchy. Each node type has a canonical de-duplication key computed by the system — agents submit raw information and Artex handles merging.
+
+<CardGroup cols={3}>
+  <Card title="root_domain" icon="globe">
+    The apex domain of a target (e.g. `example.com`). All subdomains, services, and endpoints descend from a root domain.
+  </Card>
+  <Card title="subdomain" icon="diagram-subtask">
+    A fully-qualified hostname beneath a root domain (e.g. `api.example.com`). Linked to its parent root domain.
+  </Card>
+  <Card title="ip" icon="server">
+    An IPv4 or IPv6 address. May be standalone or resolved from a subdomain. IP/CIDR range matching is used for company scope attribution.
+  </Card>
+  <Card title="service" icon="plug">
+    A network service on a specific port (e.g. `https://api.example.com:443`). Child of a subdomain or IP.
+  </Card>
+  <Card title="app" icon="window">
+    A web application or logical grouping running on a service.
+  </Card>
+  <Card title="endpoint" icon="route">
+    An individual HTTP path or API route (e.g. `/api/v1/users`). The deepest level of the hierarchy and the most common anchor point for findings.
+  </Card>
+</CardGroup>
+
+---
+
+## Asset Management
+
+Assets can be inserted manually or arrive automatically as agents explore. The Asset Graph API accepts bulk inserts and handles deduplication transparently.
+
+```http
+GET    /api/assets          # list / filter assets
+POST   /api/assets          # insert one or more assets
+DELETE /api/assets          # delete assets by id
+GET    /api/assets/counts   # counts by node type
+```
+
+### Filtering
+
+The list endpoint supports filtering by type, parent, company, and a DSL query string. Workers use `list_assets` internally for the same purpose, scoped to the current task's authorisation boundary.
+
+<Note>
+  Workers can only read assets that fall within the current task's scope list (`task_scope`). The API list endpoint is not scope-filtered and returns all assets in the global graph.
+</Note>
+
+---
+
+## Companies
+
+**Companies** group assets under an organisational umbrella and define the scope rules used for automatic asset attribution. When a new asset is discovered, Artex checks every company's scope rules and attributes the asset to the matching company automatically.
+
+### Creating a Company
+
+```http
+POST /api/companies
+```
+
+Provide the company name and an optional set of scope rules at creation time. You can also add rules after the fact.
+
+### Scope Rules
+
+Each company can have any number of scope rules. Rules are matched against asset values in the following forms:
+
+- **Domain wildcard** — `*.example.com` matches all subdomains
+- **Exact domain** — `example.com`
+- **IP address** — exact IPv4/IPv6
+- **CIDR range** — `10.0.0.0/8`
+- **ICP registration number** — for Chinese-registered domains
+- **Keyword** — a freetext hint for agent context only (not used for automatic attribution)
+
+```http
+POST /api/companies/{id}/scope
+```
+
+### Reattribute Assets
+
+If you add or change scope rules, you can trigger a full re-attribution pass that reassigns all existing assets to the correct company:
+
+```http
+POST /api/companies/reattribute
+```
+
+---
+
+## Asset Coverage Graph
+
+The **Asset Coverage Graph** is a force-directed layout visualisation that shows every in-scope asset for a task, colour-coded by whether it has been probed. It answers the question "what have the agents actually touched?"
+
+```http
+GET /api/tasks/{id}/coverage-graph
+```
+
+<CardGroup cols={2}>
+  <Card title="Tested Node Highlighting" icon="circle-check">
+    Nodes that have at least one anchored fact or finding are highlighted. Untested nodes remain visually distinct so you can see at a glance which areas have not been explored.
+  </Card>
+  <Card title="Collapse / Expand" icon="layer-group">
+    Large graphs can be collapsed by parent node to reduce visual clutter. Expanding a node reveals all its children inline.
+  </Card>
+</CardGroup>
+
+Clicking any node in the coverage graph opens a detail drawer showing all intents, facts, and findings that are anchored to that asset:
+
+```http
+GET /api/tasks/{id}/asset-refs?asset_id={id}
+```
+
+Coverage statistics (denominator, tested count, percentage by type) are served separately:
+
+```http
+GET /api/tasks/{id}/coverage
+```
+
+---
+
+## ScopeSentry Sync
+
+Artex can import assets directly from a [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) instance, avoiding manual re-entry of reconnaissance data.
+
+<Steps>
+  <Step title="Connect a Data Source">
+    Navigate to **Asset Sync** and enter your ScopeSentry instance URL and API key:
+
+    ```http
+    POST /api/sync/scopesentry/datasource
+    GET  /api/sync/scopesentry/status
+    ```
+  </Step>
+  <Step title="Select Projects or Tasks">
+    Browse available ScopeSentry projects and tasks:
+
+    ```http
+    GET /api/sync/scopesentry/projects
+    GET /api/sync/scopesentry/tasks
+    ```
+  </Step>
+  <Step title="Choose Asset Types and Import">
+    Select which asset types to import: domains, subdomains, IPs, ports, sites, and/or endpoints. Then trigger the one-click import:
+
+    ```http
+    POST /api/sync/scopesentry/sync
+    ```
+
+    Artex merges the imported assets into the global Asset Graph and attributes them to the appropriate companies based on existing scope rules.
+  </Step>
+</Steps>
+
+---
+
+## Asset Intercept Rules
+
+**Asset intercept rules** act as a circuit-breaker between the agents and the Asset Graph. Before any worker inserts a new asset or dispatches an intent targeting specific assets, the system checks the asset value against the global and task-level intercept rule sets.
+
+### Global Rules (System → Asset Intercept)
+
+Global rules apply to all tasks. Two built-in rules are pre-seeded on first startup:
+
+- Block `*.gov` / `*.gov.cn` — government domains
+- Block `*.edu` / `*.edu.cn` — educational institution domains
+
+```http
+GET    /api/asset-intercept/rules
+POST   /api/asset-intercept/rules
+PUT    /api/asset-intercept/rules/{id}
+DELETE /api/asset-intercept/rules/{id}
+POST   /api/asset-intercept/rules/{id}/toggle
+```
+
+Rules support:
+- **Exact match** — a specific domain or IP
+- **Wildcard / glob** — `*.target.com`
+- **CIDR** — `192.168.0.0/16`
+
+### Task-Level Rules (Allow / Deny)
+
+Each task can additionally define its own intercept/allow rules that override the global set for that task only. Rules are evaluated in order: **deny first, then allow**. An asset that matches a deny rule is blocked even if a allow rule also matches; an asset that matches no allow rule (when allow rules exist) is also blocked.
+
+```http
+GET    /api/tasks/{id}/intercept-rules
+POST   /api/tasks/{id}/intercept-rules
+PUT    /api/tasks/{id}/intercept-rules/{rid}
+DELETE /api/tasks/{id}/intercept-rules/{rid}
+POST   /api/tasks/{id}/intercept-rules/{rid}/toggle
+```
+
+Task-level intercept rules can also be preset in **task templates**, so they are carried into every new task created from that template.
+
+<Warning>
+  Intercepted assets are never silently dropped. The agent receives an explicit message explaining which assets were blocked and why, so it can adjust its exploration strategy accordingly.
+</Warning>

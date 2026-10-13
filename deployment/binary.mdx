@@ -1,0 +1,190 @@
+---
+title: "Install and Run the Artex Single-Binary Distribution"
+sidebarTitle: "Binary"
+description: "Get Artex running from a prebuilt binary or source build. Covers start.sh daemon, background mode, and cross-platform release archives via build.sh."
+---
+
+Artex ships as a single statically-linked binary with the Next.js frontend embedded at compile time. There is no separate web server process or asset directory to manage — one file serves both the REST API and the UI. You can grab a prebuilt binary from the original upstream releases or build your own from source using the included scripts.
+
+## Prebuilt Binaries
+
+Prebuilt release archives are hosted on the original upstream repository:
+
+```
+https://github.com/Autumn-27/ARTEX/releases
+```
+
+<Warning>
+  The mirror repository (`mhtsec/ARTEX`) does not publish binary releases. If the upstream releases page is unavailable, use the Docker method or build from source instead.
+</Warning>
+
+Each release archive contains:
+
+| File | Purpose |
+|---|---|
+| `artex` (or `artex.exe`) | The Artex server binary with embedded frontend |
+| `start.sh` / `start.bat` | Daemon wrapper — the correct way to launch Artex |
+| `skills/` | Built-in skill packages used by agents |
+| `config.example.json` | Template for the database configuration file |
+
+## Initial Setup
+
+<Steps>
+  <Step title="Extract the archive and enter the directory">
+    ```bash
+    unzip artex-VERSION-linux-amd64.zip
+    cd artex-VERSION-linux-amd64
+    ```
+  </Step>
+
+  <Step title="Create a config.json from the example">
+    ```bash
+    cp config.example.json config.json
+    ```
+
+    Edit `config.json` and fill in your PostgreSQL connection details:
+
+    ```json
+    {
+      "database": {
+        "host": "127.0.0.1",
+        "port": 5432,
+        "user": "artex",
+        "password": "yourpass",
+        "dbname": "artex",
+        "sslmode": "disable"
+      }
+    }
+    ```
+
+    <Tip>
+      You can also use the `ARTEX_PG_DSN` environment variable to supply a full connection string, which takes precedence over `config.json`. For example: `postgres://artex:yourpass@127.0.0.1:5432/artex?sslmode=disable`
+    </Tip>
+  </Step>
+
+  <Step title="Start Artex via the daemon wrapper">
+    ```bash
+    ./start.sh
+    ```
+
+    Navigate to `http://localhost:8787/setup` on first run to create your administrator account.
+  </Step>
+</Steps>
+
+## The start.sh Daemon Wrapper
+
+Always launch Artex through `start.sh` (or `start.bat` on Windows) rather than running `./artex` directly. The wrapper acts as a supervisor: it starts the Artex process, watches the exit code, and decides whether to relaunch it.
+
+| Exit code | Meaning | Wrapper action |
+|---|---|---|
+| `0` | Clean shutdown | Exit — do not relaunch |
+| `75` | Restart requested | Immediately relaunch (used by one-click updates and rollbacks) |
+| Any other | Crash | Relaunch after exponential back-off (1 s → 2 s → 4 s … up to 60 s) |
+
+<Warning>
+  If you run `./artex` directly and trigger an in-place update from the UI, the process will exit after staging the new binary but nothing will relaunch it. The server stays down until you manually restart. Always use `start.sh`.
+</Warning>
+
+### Running in the Background
+
+```bash
+nohup ./start.sh >artex.log 2>&1 &
+```
+
+Pass startup flags after `start.sh` — they are forwarded transparently to the Artex binary:
+
+```bash
+./start.sh -addr :8787 -proxy :8788
+```
+
+`-addr` sets the frontend + API listen address. `-proxy` sets the traffic-recording MITM proxy port. Both default to `:8787` and `:8788` respectively.
+
+## Building from Source
+
+Build a development binary on your local machine in three steps. You need Go ≥ 1.26 and Node.js with npm.
+
+<Steps>
+  <Step title="Build the Next.js frontend (static export)">
+    ```bash
+    cd web && npm ci && npm run build:static && cd ..
+    ```
+
+    This produces the static output in `web/out/`.
+  </Step>
+
+  <Step title="Copy the static output into the embed directory">
+    ```bash
+    cp -r web/out server/webui/dist
+    ```
+
+    The Go build reads from this exact path when the `embedui` build tag is present.
+  </Step>
+
+  <Step title="Compile the binary with the frontend embedded">
+    ```bash
+    CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
+    ```
+
+    The resulting `artex` binary is fully static and includes the frontend. Run it with `./start.sh`.
+  </Step>
+</Steps>
+
+<Note>
+  Omitting `-tags embedui` produces a backend-only binary. The server will not serve the frontend in that mode — use it only during development alongside `npm run dev` in the `web/` directory.
+</Note>
+
+## Cross-Platform Release Builds with build.sh
+
+`build.sh` automates the full release pipeline: it builds the frontend, compiles the Go binary for each target platform, strips debug symbols, and packages everything into zip archives alongside a `SHA256SUMS` file.
+
+### Build all supported targets
+
+```bash
+./build.sh --release
+```
+
+By default this produces zip archives in `dist/` for:
+
+- `linux/amd64`, `linux/arm64`
+- `darwin/amd64`, `darwin/arm64`
+- `windows/amd64`
+
+Output files follow the pattern `dist/artex-VERSION-OS-ARCH.zip`. Each archive contains the binary, the appropriate start script (`start.sh` or `start.bat`), the `skills/` directory, and `config.example.json`.
+
+### Build a subset of targets
+
+Override the target list with the `ARTEX_TARGETS` environment variable:
+
+```bash
+ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
+```
+
+Or build a single target using `--target`:
+
+```bash
+./build.sh --target linux/amd64
+```
+
+### UPX compression
+
+UPX self-extracting binaries are **disabled by default** because they may be incompatible with some Linux kernels, virtualisation environments, and security policies. Enable UPX only after confirming your target environment supports it:
+
+```bash
+./build.sh --target linux/amd64 --upx
+```
+
+<Warning>
+  UPX-compressed binaries have been known to trigger antivirus false positives and fail to run inside containers with certain seccomp profiles. Test the compressed binary in the target environment before distributing it.
+</Warning>
+
+### Environment variable reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `ARTEX_TARGETS` | platform list | Comma-separated `OS/ARCH` targets for `--release` |
+| `ARTEX_BUILD_VERSION` | `git describe` | Version string embedded in the binary and archive name |
+| `ARTEX_OUTPUT_DIR` | `dist` | Directory for compiled binaries |
+| `ARTEX_PACKAGE_DIR` | `dist` | Directory for release zip archives |
+| `ARTEX_COMPRESS` | `off` | UPX mode: `off`, `auto`, or `required` |
+| `ARTEX_SKIP_FRONTEND` | `0` | Set to `1` to reuse an existing `server/webui/dist` |
+| `ARTEX_GOSUMDB` | `sum.golang.org` | Go checksum database URL |

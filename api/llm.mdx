@@ -1,0 +1,281 @@
+---
+title: "Artex LLM API: Configure Providers, Profiles & Pool"
+sidebarTitle: "LLM API"
+description: "Manage LLM providers, named profiles, retry policy, failover pool status, and test connectivity. Includes token usage stats and the log stream for monitoring."
+---
+
+Artex supports any Anthropic-compatible or OpenAI-compatible LLM provider. The LLM API lets you configure the global active provider, manage named profiles for per-agent and per-task binding, control the failover pool, set retry policies, and test connectivity — all without restarting the server.
+
+---
+
+## Global LLM Config (Legacy)
+
+These endpoints configure or read the single "default" profile. The profile-based endpoints below offer more flexibility for multi-provider setups.
+
+### GET /api/llm
+
+Return the currently active LLM configuration. The API key is never returned.
+
+```bash
+curl http://localhost:8787/api/llm \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response**
+
+<ResponseField name="configured" type="boolean">Whether a functional LLM provider is installed.</ResponseField>
+<ResponseField name="provider" type="string">`anthropic` | `openai` | `openai-responses`</ResponseField>
+<ResponseField name="model" type="string">Active model name (e.g., `claude-opus-4-5`).</ResponseField>
+<ResponseField name="base_url" type="string">Custom API endpoint, empty for default provider URLs.</ResponseField>
+<ResponseField name="proxy" type="string">HTTP proxy URL, if configured.</ResponseField>
+<ResponseField name="key_set" type="boolean">`true` when an API key is stored.</ResponseField>
+<ResponseField name="rate_per_second" type="number">Requests-per-second rate limit (0 = unlimited).</ResponseField>
+<ResponseField name="rate_per_minute" type="number">Requests-per-minute rate limit (0 = unlimited).</ResponseField>
+<ResponseField name="context_window_k" type="integer">Context window size in thousands of tokens.</ResponseField>
+<ResponseField name="thinking_type" type="string">Extended thinking mode (`""`, `"enabled"`, etc.).</ResponseField>
+<ResponseField name="reasoning_effort" type="string">Reasoning effort hint for o-series models.</ResponseField>
+
+---
+
+### POST /api/llm
+
+Set the global LLM configuration. Persisted as the "default" profile and activated immediately.
+
+<ParamField body="provider" type="string" required>
+  `anthropic`, `openai`, or `openai-responses` (for the OpenAI Responses API).
+</ParamField>
+
+<ParamField body="model" type="string" required>
+  Model identifier, e.g., `"claude-opus-4-5"` or `"gpt-4o"`.
+</ParamField>
+
+<ParamField body="api_key" type="string">
+  API key. If omitted, the existing stored key is kept.
+</ParamField>
+
+<ParamField body="base_url" type="string">
+  Custom endpoint for OpenAI-compatible providers (e.g., a local LiteLLM proxy).
+</ParamField>
+
+<ParamField body="proxy" type="string">
+  HTTP/SOCKS5 proxy URL for all LLM requests.
+</ParamField>
+
+<ParamField body="rate_per_second" type="number">
+  Per-second request rate cap. `0` = unlimited.
+</ParamField>
+
+<ParamField body="rate_per_minute" type="number">
+  Per-minute request rate cap. `0` = unlimited.
+</ParamField>
+
+<ParamField body="context_window_k" type="integer">
+  Context window size in thousands of tokens (1–1000; `0` = use provider default of 200K).
+</ParamField>
+
+<ParamField body="thinking_type" type="string">
+  Extended thinking: `""` (off) or `"enabled"` (for Claude 3.7+ models).
+</ParamField>
+
+<ParamField body="reasoning_effort" type="string">
+  Reasoning effort for o-series models: `"low"`, `"medium"`, or `"high"`.
+</ParamField>
+
+---
+
+### POST /api/llm/test
+
+Send a real minimal completion request to validate the config before saving. Returns latency and a truncated model reply so you can confirm the model actually responded.
+
+<ParamField body="provider" type="string" required>Provider identifier.</ParamField>
+<ParamField body="model" type="string" required>Model name.</ParamField>
+<ParamField body="api_key" type="string">API key (may be omitted to test an already-saved profile's key).</ParamField>
+<ParamField body="base_url" type="string">Custom endpoint.</ParamField>
+<ParamField body="proxy" type="string">HTTP proxy.</ParamField>
+<ParamField body="thinking_type" type="string">Extended thinking mode to test.</ParamField>
+<ParamField body="reasoning_effort" type="string">Reasoning effort hint.</ParamField>
+<ParamField body="streaming" type="boolean">Test streaming mode (default `true`).</ParamField>
+<ParamField body="profile_id" type="integer">Test an existing saved profile — the stored API key is used when `api_key` is empty.</ParamField>
+<ParamField body="session_header_key" type="string">Custom session header name to include in the test request.</ParamField>
+
+**Response**
+
+<ResponseField name="ok" type="boolean">Whether the test call succeeded.</ResponseField>
+<ResponseField name="latency_ms" type="integer">Round-trip latency in milliseconds.</ResponseField>
+<ResponseField name="model" type="string">Model that was tested.</ResponseField>
+<ResponseField name="reply" type="string">Truncated model reply (up to 200 characters).</ResponseField>
+<ResponseField name="error" type="string">Error message when `ok` is `false`.</ResponseField>
+
+---
+
+## LLM Profiles
+
+Named profiles let you configure multiple providers and bind specific agents or tasks to them. Artex uses profile IDs throughout the task and agent APIs.
+
+### GET /api/llm/profiles
+
+List all saved LLM profiles.
+
+**LLMProfileDTO fields**
+
+<ResponseField name="id" type="string">Profile ID (numeric string).</ResponseField>
+<ResponseField name="name" type="string">Display name (e.g., `"default"`, `"fast-haiku"`).</ResponseField>
+<ResponseField name="format" type="string">`anthropic` | `openai` | `openai-responses`</ResponseField>
+<ResponseField name="model" type="string">Model identifier.</ResponseField>
+<ResponseField name="base_url" type="string">Custom endpoint (empty for default provider URL).</ResponseField>
+<ResponseField name="proxy" type="string">HTTP proxy URL.</ResponseField>
+<ResponseField name="api_key_hint" type="string">Last 4 characters of the stored key for display (never the full key).</ResponseField>
+<ResponseField name="rate_per_second" type="number">Per-second rate cap.</ResponseField>
+<ResponseField name="rate_per_minute" type="number">Per-minute rate cap.</ResponseField>
+<ResponseField name="context_window_k" type="integer">Context window in thousands of tokens.</ResponseField>
+<ResponseField name="thinking_type" type="string">Extended thinking mode.</ResponseField>
+<ResponseField name="reasoning_effort" type="string">Reasoning effort hint.</ResponseField>
+<ResponseField name="is_default" type="boolean">`true` for the profile activated as the global default.</ResponseField>
+<ResponseField name="streaming" type="boolean">Whether streaming (SSE) is used for completions.</ResponseField>
+<ResponseField name="max_tokens" type="integer">Per-reply output token cap (`0` = server decides).</ResponseField>
+<ResponseField name="priority" type="integer">Failover pool priority (higher = preferred).</ResponseField>
+<ResponseField name="pool_exclude" type="boolean">When `true`, this profile is excluded from automatic failover but can still be explicitly bound.</ResponseField>
+<ResponseField name="session_header_key" type="string">Custom HTTP session header name for sticky routing gateways.</ResponseField>
+<ResponseField name="retry" type="object">Per-profile retry overrides (see Retry Policy below).</ResponseField>
+
+---
+
+### POST /api/llm/profiles
+
+Create or update a profile. Pass `id` to update an existing one; omit to create new.
+
+<ParamField body="name" type="string" required>Unique display name for the profile.</ParamField>
+<ParamField body="format" type="string" required>`anthropic`, `openai`, or `openai-responses`.</ParamField>
+<ParamField body="model" type="string" required>Model identifier.</ParamField>
+<ParamField body="api_key" type="string">API key. Omit when updating a profile to leave the stored key unchanged.</ParamField>
+<ParamField body="base_url" type="string">Custom API base URL for OpenAI-compatible endpoints.</ParamField>
+<ParamField body="proxy" type="string">HTTP/SOCKS5 proxy URL.</ParamField>
+<ParamField body="rate_per_second" type="number">Per-second rate cap (`0` = unlimited).</ParamField>
+<ParamField body="rate_per_minute" type="number">Per-minute rate cap (`0` = unlimited).</ParamField>
+<ParamField body="context_window_k" type="integer">Context window in thousands of tokens.</ParamField>
+<ParamField body="thinking_type" type="string">Extended thinking mode.</ParamField>
+<ParamField body="reasoning_effort" type="string">Reasoning effort hint.</ParamField>
+<ParamField body="streaming" type="boolean">Use streaming mode (default `true`).</ParamField>
+<ParamField body="max_tokens" type="integer">Per-reply output cap in tokens.</ParamField>
+<ParamField body="priority" type="integer">Failover pool priority.</ParamField>
+<ParamField body="pool_exclude" type="boolean">Exclude from automatic failover.</ParamField>
+<ParamField body="session_header_key" type="string">Custom session header name.</ParamField>
+
+---
+
+### DELETE /api/llm/profiles/{id}
+
+Delete a profile. Agents bound to this profile fall back to the global active profile (FK ON DELETE SET NULL).
+
+---
+
+### POST /api/llm/profiles/active
+
+Activate a profile globally. All unbound agents and tasks use this profile.
+
+<ParamField body="id" type="integer" required>Profile ID to activate.</ParamField>
+
+---
+
+## Retry Policy
+
+The retry policy controls how Artex handles transient LLM failures (timeouts, empty responses, rate limits).
+
+### GET /api/llm/retry-policy
+
+Return the current global retry policy.
+
+<ResponseField name="connect_attempts" type="integer">Max connection-level retries.</ResponseField>
+<ResponseField name="connect_interval_ms" type="integer">Delay between connection retries in milliseconds.</ResponseField>
+<ResponseField name="empty_attempts" type="integer">Retries for empty-response errors.</ResponseField>
+<ResponseField name="empty_interval_ms" type="integer">Delay between empty-response retries.</ResponseField>
+<ResponseField name="provider_window_ms" type="integer">Cooldown window before retrying the same provider after a failure.</ResponseField>
+
+### POST /api/llm/retry-policy
+
+Save a new global retry policy. Per-profile retry fields (`retry` in `POST /api/llm/profiles`) override the global policy for that profile.
+
+---
+
+## Failover Pool
+
+### GET /api/llm/pool
+
+Return the current state of the LLM failover pool — which profiles are healthy, rate-limited, or credit-exhausted.
+
+<ResponseField name="entries" type="array">
+  Array of pool entries with `profile_id`, `name`, `healthy`, `cooldown_until`, and `failure_reason`.
+</ResponseField>
+
+### POST /api/llm/pool/reset
+
+Reset all circuit-breaker states in the pool, returning all profiles to healthy status. Use this after fixing a provider outage or adding credits.
+
+---
+
+## Model Discovery
+
+### POST /api/llm/models
+
+Fetch the list of available models from a provider's `/models` endpoint (OpenAI-compatible only).
+
+<ParamField body="provider" type="string" required>Provider format (`openai` or `openai-responses`).</ParamField>
+<ParamField body="base_url" type="string">Custom endpoint to query.</ParamField>
+<ParamField body="api_key" type="string">API key to authenticate the request.</ParamField>
+<ParamField body="proxy" type="string">HTTP proxy URL.</ParamField>
+
+**Response:** array of model ID strings.
+
+---
+
+## Token Usage & Monitoring
+
+### GET /api/stats
+
+System stats including per-task token counters. Pass `?task=<id>` for task-scoped token counts. See the [API Overview](/api/overview) for the full response shape.
+
+### GET /api/exploration/tokens
+
+Return token usage aggregated by worker session for the active or specified task.
+
+### GET /api/tokens/daily
+
+Return daily token usage aggregated across all tasks.
+
+### GET /api/tokens/conversations
+
+Return token usage aggregated by conversation.
+
+### GET /api/tokens/usage
+
+Return global LLM usage statistics (input tokens, output tokens, cost estimates) aggregated across all profiles and models — used by the dashboard usage view.
+
+### GET /api/llm/records
+
+List raw LLM call records. Supports filtering by `task_id`, `profile`, and date range, and pagination.
+
+### GET /api/llm/records/{id}
+
+Fetch a single raw LLM record including the full prompt and completion content.
+
+### DELETE /api/llm/records
+
+Bulk-delete LLM records by task ID or date range.
+
+---
+
+## Log Stream (LLM Monitoring)
+
+### GET /api/logs/stream
+
+SSE stream of backend logs including all LLM call events. Accepts `?token=<jwt>` query parameter.
+
+```
+GET /api/logs/stream?token=<jwt>
+```
+
+Each SSE event contains a JSON object with `level`, `ts`, `msg`, and an optional `data` field. LLM request/response events include model, token counts, and latency, making this stream useful for real-time monitoring of agent activity and provider health.
+
+<Tip>
+  The log stream shows per-call latency, token counts, and any provider errors. Combined with the pool status endpoint, it gives full visibility into which provider is serving requests and how they are performing.
+</Tip>

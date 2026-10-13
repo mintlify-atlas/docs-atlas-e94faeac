@@ -1,0 +1,250 @@
+---
+title: "Task System: Lifecycle, Goals, and Controls"
+sidebarTitle: "Tasks"
+description: "How Artex tasks work — from creation through archiving — including lifecycle states, scope, goals, constraints, archives, and worker-level controls."
+---
+
+A **task** in Artex is a bounded, autonomous exploration campaign directed at a specific target scope. When you create a task you give it a free-text description and a goal; from that point on the planner and worker agents drive the entire investigation independently, reading and writing the dual-graph (Exploration Graph + Asset Graph) until every goal is proved or you stop it manually. This page covers the full lifecycle of a task, from first creation to final archival.
+
+---
+
+## Task Lifecycle
+
+A task moves through the following states as it runs.
+
+<Steps>
+  <Step title="Created / Queued">
+    A task is created via the task list page or `POST /api/tasks`. If the system-wide concurrency cap is already saturated the task enters **queued** state and is promoted automatically when a slot opens (persistent FIFO order).
+  </Step>
+  <Step title="Running">
+    The engine starts a `plannerLoop` and up to N worker goroutines (configured in System Settings). The planner dispatches intents; workers claim and execute them, writing results back to both graphs.
+  </Step>
+  <Step title="Paused">
+    Pausing (`POST /api/tasks/{id}/control` with `action: "pause"`) terminates the current planner and worker LLM calls gracefully, leaving all graph data intact. The task can be resumed at any time.
+  </Step>
+  <Step title="Stopped / Timeout">
+    A task that exceeds its configured `timeout_seconds` budget is stopped by the deadline coordinator. You can also stop a task manually from the UI. Findings, facts, and assets are all preserved.
+  </Step>
+  <Step title="Completed (Done)">
+    When the planner calls `prove_goal` or `goal_met` and all goals are marked `met`, the task transitions to **done**. You can continue interacting with the task via the main-agent chat even after completion.
+  </Step>
+</Steps>
+
+<Note>
+  Restarting the server resets any `running` intents back to `open` so they can be re-claimed. Database schema migrations run automatically on every startup — no manual steps needed.
+</Note>
+
+---
+
+## Task Categories and Templates
+
+Tasks can be organised into **categories** for filtering. Categories are global and can be created, renamed, or deleted from the task list. You can reassign one or many tasks to a different category in bulk.
+
+**Templates** let you save a reusable combination of description, goals, constraints, and intercept rules. When you create a new task you can load a template to pre-fill the form — useful for recurring assessments of similar targets.
+
+```http
+GET  /api/task-templates
+POST /api/task-templates
+PATCH /api/task-templates/{id}
+DELETE /api/task-templates/{id}
+```
+
+---
+
+## Task Scope
+
+Every task has a **scope list** (`task_scope`) that defines which assets the agents are authorised to probe. The scope list is the authorisation boundary for asset queries — workers only see and can write back assets that fall within scope.
+
+<CardGroup cols={2}>
+  <Card title="Attach Companies" icon="building">
+    Associate one or more companies when creating a task. Artex automatically pulls the company's domain wildcards and CIDR ranges into the task's scope.
+  </Card>
+  <Card title="Explicit Scope Rules" icon="list-check">
+    Add individual domains, URLs, IPs, CIDRs, ICP registration numbers, or keywords. Rules are matched structurally — a root domain in scope covers all its subdomains and services.
+  </Card>
+</CardGroup>
+
+Scope rows are readable at `GET /api/tasks/{id}/scope` and can be added or deleted at runtime:
+
+```http
+GET    /api/tasks/{id}/scope
+POST   /api/tasks/{id}/scope
+DELETE /api/tasks/{id}/scope/{sid}
+```
+
+---
+
+## Task Control
+
+Use `POST /api/tasks/{id}/control` to pause or resume autonomous execution. Batch operations against multiple tasks are available at `POST /api/tasks/control/batch`.
+
+```json
+{ "action": "pause" }
+```
+
+Valid actions are `pause` and `resume`. Pausing a task terminates the in-flight planner and worker LLM calls but does not discard any explored data.
+
+---
+
+## Operation Constraints
+
+Per-task **constraints** restrict what the agents are allowed (or forbidden) to do during exploration. Constraints are injected verbatim into both the planner and worker system prompts at each round.
+
+```json
+{ "type": "deny",  "text": "Do not interact with the production database." }
+{ "type": "allow", "text": "Passive reconnaissance of subdomains is permitted." }
+```
+
+<CardGroup cols={2}>
+  <Card title="Add Constraint" icon="shield-check">
+    `POST /api/tasks/{id}/constraints` — constraint text plus `allow` or `deny` type.
+  </Card>
+  <Card title="Manage Constraints" icon="sliders">
+    `PATCH /api/tasks/{id}/constraints/{cid}` and `DELETE` let you edit or remove any constraint while the task is running; changes take effect on the next planner/worker round.
+  </Card>
+</CardGroup>
+
+---
+
+## Goals
+
+**Goals** are the verifiable outcomes the planner is trying to achieve. Each goal node lives in the Exploration Graph with state `open` or `met`. The planner calls `prove_goal` to link an evidence node (fact or finding) to a goal and mark it `met`; when all goals are `met` the task transitions to **done** automatically.
+
+You can manage goals at runtime without restarting the task:
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/tasks/{id}/goals` | List all goals and their current state |
+| `POST /api/tasks/{id}/goals` | Add a new goal (revives a completed task) |
+| `PATCH /api/tasks/{id}/goals/{gid}` | Edit goal text (also revives the task and notifies the planner) |
+| `DELETE /api/tasks/{id}/goals/{gid}` | Hard-delete a goal node (does **not** revive the task) |
+
+<Warning>
+  Adding or editing a goal notifies the planner and will revive a completed task, causing it to resume autonomous execution. Deleting a goal does not revive the task.
+</Warning>
+
+---
+
+## Task Archives
+
+Completed tasks can be **archived** into a self-contained snapshot package and removed from active storage. Archives are useful for long-term record-keeping and for freeing database space.
+
+<Tabs>
+  <Tab title="Archive">
+    Queue an archive from the task detail page or via:
+
+    ```http
+    POST /api/tasks/{id}/archive
+    POST /api/tasks/archive/batch
+    ```
+
+    The backend streams the task data into the archive asynchronously, so large tasks do not block the UI.
+  </Tab>
+  <Tab title="Browse & Restore">
+    ```http
+    GET  /api/task-archives
+    GET  /api/task-archives/{id}
+    POST /api/task-archives/{id}/restore
+    POST /api/task-archives/restore/batch
+    ```
+
+    Restoring an archive recreates the task and its full Exploration Graph. PostgreSQL data (findings, assets) and the SQLite traffic store are all restored from the archive package.
+  </Tab>
+  <Tab title="Delete Archive">
+    ```http
+    DELETE /api/task-archives/{id}
+    POST   /api/task-archives/delete/batch
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Task archives do not currently include vulnerability retest history or automatic traffic evidence bindings.
+</Note>
+
+---
+
+## Vulnerability Retest
+
+Any confirmed finding can be retested by a dedicated **retester agent** without restarting the original scan task.
+
+<Steps>
+  <Step title="Launch a Retest">
+    Click **Retest** on any finding row (in the flat, grouped, or asset-tree view) or press **Launch Retest** inside the finding detail panel. You can optionally provide a fixed version, test conditions, or other constraints.
+
+    ```http
+    POST /api/exploration/findings/{id}/retests
+    ```
+  </Step>
+  <Step title="Monitor Progress">
+    The UI displays a spinner and "Retesting" label while the agent session is active. Click through to the session to watch live output.
+  </Step>
+  <Step title="Review Conclusion">
+    When the retester finishes it records one of three conclusions:
+
+    | Conclusion | Meaning |
+    |---|---|
+    | **Still reproducible** | The vulnerability can still be triggered |
+    | **Fixed** | The vulnerability is no longer present |
+    | **Cannot confirm** | The agent could not reach a definitive conclusion |
+
+    If the conclusion is **Fixed**, Artex automatically updates the finding's disposition status to `fixed`.
+  </Step>
+</Steps>
+
+The retester agent (`retester`) is pre-seeded on first startup. You can customise its system prompt, LLM binding, run budget, and tool set in **Agent Management**. By default it uses its bound LLM profile and falls back to the globally active configuration.
+
+```http
+GET  /api/exploration/findings/{id}/retests
+GET  /api/exploration/findings/retests/active
+```
+
+---
+
+## Intent (Worker) Intervention
+
+While a task is running you can intervene at the individual **intent** (worker session) level without pausing the whole task.
+
+<Accordion title="Pause / Resume / Cancel an Intent">
+  ```http
+  POST /api/tasks/{id}/intents/{iid}/control
+  ```
+
+  ```json
+  { "action": "pause" }
+  { "action": "resume" }
+  { "action": "cancel", "reason": "Going off-scope.", "mode": "soft" }
+  ```
+
+  - **pause** — suspends the worker, preserving all written-back data.
+  - **resume** — restarts the worker from where it paused.
+  - **cancel (soft)** — marks the intent `deleted` and records the reason; all facts, findings, and assets already written remain intact.
+  - **cancel (hard)** — physically removes the intent and cascades to delete any graph nodes that are exclusively reachable from it.
+</Accordion>
+
+<Accordion title="Rerun a Blocked or Failed Intent">
+  Intents that end in `blocked`, `exhausted`, or `stopped` can be re-opened for another attempt:
+
+  ```http
+  POST /api/tasks/{id}/intents/{iid}/rerun
+  POST /api/tasks/{id}/intents/rerun-blocked   ← batch
+  ```
+
+  The intent is reset to `open` and the task is revived if it had terminated. All previously written results are preserved.
+</Accordion>
+
+---
+
+## Worker Message Injection
+
+You can send a mid-run course-correction message to a worker that is currently executing an intent, without killing it:
+
+```http
+POST /api/tasks/{id}/intents/{iid}/messages
+```
+
+The message is queued in memory and injected into the worker's context before its next tool call. The worker re-plans its remaining steps with the new guidance while keeping all context it has already accumulated.
+
+<Tip>
+  Use message injection for nudges like "stop scanning port 80, focus on the admin panel". If the entire exploration direction is wrong, cancel the intent and dispatch a new one instead.
+</Tip>

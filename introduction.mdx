@@ -1,0 +1,80 @@
+---
+title: "Artex: AI-Driven Autonomous Penetration Testing"
+sidebarTitle: "Introduction"
+description: "Artex is an AGPL-3.0 multi-agent LLM system for autonomous penetration testing, built with Go, Next.js, and PostgreSQL for local research labs."
+---
+
+Artex is an autonomous penetration testing system that orchestrates multiple LLM agents to plan and execute security assessments without manual step-by-step guidance. It ships as a single Go binary with an embedded Next.js frontend — no separate web server required — and stores all findings in PostgreSQL. The entire stack runs locally, making it suitable for isolated lab environments where data sovereignty matters.
+
+<Warning>
+  Artex is licensed under **AGPL-3.0** and is intended **exclusively for personal learning, code research, and local technical validation**. It must not be used to scan, probe, exploit, or attack any online systems, services, or networked infrastructure — regardless of whether you own them. All legal responsibility for misuse rests with the operator. See the [full disclaimer](https://github.com/mhtsec/ARTEX#许可与免责声明) in the repository.
+</Warning>
+
+## What Artex Does
+
+Artex decomposes a penetration testing engagement into a structured pipeline driven by a **planner agent** and **N parallel worker agents**, all coordinated through the [norma SDK](https://github.com/Autumn-27/norma). When given a scope, the planner reads the current state of two shared graphs — the global Asset Graph and a per-task Exploration Graph — and issues *intents* (discrete testing directions) to a frontier queue. Workers claim intents, execute real tools (Bash, HTTP, Nmap, and more), then write discovered assets, facts, and findings back into both graphs. Each write event re-wakes the planner, creating a closed, event-driven loop that continues until the goal is proven or the scope is exhausted.
+
+## Key Capabilities
+
+- **Dual-graph architecture** — a global Asset Graph shared across tasks and a per-task Exploration Graph that tracks the full reasoning lineage from goal → intent → fact → finding
+- **Multi-agent orchestration** — one planner plus configurable worker agents running concurrently per task (default: 3)
+- **Human-in-the-loop controls** — intercept/approval gates let you review and approve tool calls before execution; a chat interface supports live dialogue with a main agent
+- **Traffic recording** — a built-in MITM proxy captures all HTTP/S traffic with CA-signed certificates for later review
+- **Asset sync** — import assets directly from [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) to skip manual target collection
+- **LLM provider flexibility** — supports Anthropic (`ANTHROPIC_API_KEY`) and any OpenAI-compatible provider (`OPENAI_API_KEY` or custom `ARTEX_LLM_BASE_URL`)
+- **One-click updates** — the built-in update mechanism downloads, checksums, smoke-tests, and hot-swaps a new binary without touching your data; automatic rollback fires if the new binary fails three consecutive starts
+
+## Architecture at a Glance
+
+The entire application runs on a single port (default **8787**). The Next.js frontend is compiled to a static export and embedded into the Go binary at build time via `go:embed`. The backend exposes a REST API with JWT authentication and a Server-Sent Events stream for real-time activity. PostgreSQL is the only external runtime dependency.
+
+```text
+┌─────────────────────────────────────────────────────┐
+│  Browser  →  :8787  (REST + SSE + Embedded Next.js)  │
+├─────────────────────────────────────────────────────┤
+│  Go server  →  Engine  →  Planner + Workers (norma)  │
+├─────────────────────────────────────────────────────┤
+│  PostgreSQL  (Asset Graph + Exploration Graph)       │
+└─────────────────────────────────────────────────────┘
+```
+
+## Repository
+
+The source code and self-maintained Docker image live at:
+
+**[https://github.com/mhtsec/ARTEX](https://github.com/mhtsec/ARTEX)**
+
+> The original `autumn27/artex` Docker Hub image no longer exists. The repository now maintains its own image at `mianhuatang11/artex`. If that image is unavailable you can always build from source with `docker compose build`.
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Run a local Artex instance in under five minutes using Docker Compose — no build step required.
+  </Card>
+  <Card
+    title="Architecture"
+    icon="diagram-project"
+    href="/concepts/architecture"
+  >
+    Understand the dual-graph design, planner/worker lifecycle, and how the event-driven engine closes the loop.
+  </Card>
+  <Card
+    title="Tasks & Scanning"
+    icon="crosshairs"
+    href="/features/tasks"
+  >
+    Learn how to create tasks, configure scope, manage agents, and read exploration results.
+  </Card>
+  <Card
+    title="API Overview"
+    icon="code"
+    href="/api/overview"
+  >
+    Browse the REST endpoints and SSE stream that power the Artex frontend and any custom integrations.
+  </Card>
+</CardGroup>

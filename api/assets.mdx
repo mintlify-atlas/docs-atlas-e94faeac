@@ -1,0 +1,256 @@
+---
+title: "Artex Assets API: Global Asset Graph & Company Management"
+sidebarTitle: "Assets API"
+description: "Manage the global Asset Graph: list, insert, and delete assets; create and scope companies; sync assets from ScopeSentry; and configure asset intercept rules."
+---
+
+Artex maintains a global Asset Graph that all tasks share. Assets are grouped under companies and can be attached to specific tasks as scope. This page covers the full asset and company management API, ScopeSentry synchronization, and asset-level intercept rules (the global blacklist).
+
+---
+
+## Assets
+
+### GET /api/assets
+
+List assets from the global Asset Graph with optional type and scope filters.
+
+**Query parameters**
+
+| Parameter | Description |
+|-----------|-------------|
+| `type` | Filter by asset type: `domain`, `subdomain`, `ip`, `http_service`, `endpoint`, `app`, `bundle`, `service`, `root_domain` |
+| `company` | Filter by company ID. |
+| `domain` | Filter by parent domain string. |
+| `task` | Filter to assets attached to a specific task ID. |
+| `q` | Substring search across asset labels. |
+| `page`, `limit` | Pagination. |
+
+**Asset object fields**
+
+<ResponseField name="id" type="integer">Unique asset ID.</ResponseField>
+<ResponseField name="type" type="string">Asset type (e.g., `http_service`, `ip`, `domain`).</ResponseField>
+<ResponseField name="url" type="string">URL for HTTP service assets.</ResponseField>
+<ResponseField name="domain" type="string">Domain or subdomain value.</ResponseField>
+<ResponseField name="ip" type="string">IP address for IP assets.</ResponseField>
+<ResponseField name="port" type="integer">Port number when applicable.</ResponseField>
+<ResponseField name="root_domain" type="string">Root domain for root-domain type assets.</ResponseField>
+<ResponseField name="app_name" type="string">Application name for mobile/app assets.</ResponseField>
+<ResponseField name="company_id" type="integer">Owning company ID (if attributed).</ResponseField>
+
+---
+
+### GET /api/assets/counts
+
+Return asset counts grouped by type across the entire Asset Graph.
+
+```bash
+curl "http://localhost:8787/api/assets/counts" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Response**
+
+```json
+{
+  "domain": 45,
+  "ip": 12,
+  "http_service": 38,
+  "subdomain": 107,
+  "endpoint": 290
+}
+```
+
+---
+
+### POST /api/assets
+
+Bulk-insert assets into the Asset Graph.
+
+<ParamField body="assets" type="array" required>
+  Array of asset objects. Each element must include `type` and the appropriate identifier field (`url`, `domain`, `ip`, `root_domain`, `app_name`, `bundle_id`, or `service_name`). Optional: `port`, `method`, `company_id`, `task_id`.
+</ParamField>
+
+Returns the number of inserted and upserted records.
+
+---
+
+### DELETE /api/assets
+
+Bulk-delete assets by ID.
+
+<ParamField body="ids" type="array" required>Array of integer asset IDs to delete.</ParamField>
+
+---
+
+## Companies
+
+Companies are the organizational unit that groups assets by scope. The agent uses company scopes to determine which assets are in-target.
+
+### GET /api/companies
+
+List all companies.
+
+<ResponseField name="id" type="integer">Company ID.</ResponseField>
+<ResponseField name="name" type="string">Company display name.</ResponseField>
+<ResponseField name="scope" type="array">Array of scope rule objects (`kind`, `value`).</ResponseField>
+<ResponseField name="asset_count" type="integer">Total assets attributed to this company.</ResponseField>
+
+---
+
+### POST /api/companies
+
+Create a new company.
+
+<ParamField body="name" type="string" required>Display name for the company.</ParamField>
+
+---
+
+### GET /api/companies/{id}
+
+Get a company by ID, including its scope rules and attributed assets.
+
+---
+
+### DELETE /api/companies/{id}
+
+Delete a company. Assets lose their company attribution.
+
+---
+
+### POST /api/companies/{id}/scope
+
+Add a scope rule to the company. Scope rules define which assets belong to this company and thus determine what agents consider in-target.
+
+<ParamField body="kind" type="string" required>
+  Scope rule type: `domain` (matches root domain + all subdomains), `ip`, `cidr`, or `url_prefix`.
+</ParamField>
+
+<ParamField body="value" type="string" required>
+  The pattern value, e.g., `"example.com"`, `"10.0.0.0/8"`, or `"https://api.example.com/"`.
+</ParamField>
+
+---
+
+### POST /api/companies/reattribute
+
+Re-run company attribution across all assets. Assets are re-matched against all company scope rules and re-assigned accordingly. Useful after adding new scope rules or importing new assets.
+
+---
+
+## ScopeSentry Sync
+
+Artex integrates with [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) to import recon data directly into the Asset Graph.
+
+### GET /api/sync/scopesentry/status
+
+Return the current ScopeSentry connection status and configured datasource URL.
+
+<ResponseField name="configured" type="boolean">Whether a datasource URL is saved.</ResponseField>
+<ResponseField name="reachable" type="boolean">Whether the configured ScopeSentry instance is reachable.</ResponseField>
+
+---
+
+### POST /api/sync/scopesentry/datasource
+
+Save the ScopeSentry connection details.
+
+<ParamField body="url" type="string" required>Base URL of the ScopeSentry instance (e.g., `https://scopesentry.example.com`).</ParamField>
+<ParamField body="api_key" type="string" required>ScopeSentry API key.</ParamField>
+
+---
+
+### GET /api/sync/scopesentry/projects
+
+Return the list of projects available in the connected ScopeSentry instance.
+
+---
+
+### GET /api/sync/scopesentry/tasks
+
+Return the list of recon tasks available in the connected ScopeSentry instance.
+
+---
+
+### POST /api/sync/scopesentry/sync
+
+Execute a sync: import selected assets from ScopeSentry into the Artex Asset Graph.
+
+<ParamField body="project_ids" type="array">
+  ScopeSentry project IDs to import from.
+</ParamField>
+
+<ParamField body="task_ids" type="array">
+  ScopeSentry task IDs to import from.
+</ParamField>
+
+<ParamField body="asset_types" type="array">
+  Which asset types to import: e.g., `["domain", "subdomain", "ip", "http_service", "endpoint"]`.
+</ParamField>
+
+<ParamField body="company_id" type="integer">
+  Artex company to attribute the imported assets to. Leave `null` to run attribution automatically.
+</ParamField>
+
+Returns a summary of imported asset counts by type.
+
+---
+
+## Asset Intercept Rules
+
+Asset intercept rules form the global blacklist: domains, IPs, URLs, and CIDR ranges that agents are never allowed to interact with, regardless of task scope.
+
+<Warning>
+  Asset intercept rules differ from tool-call intercept rules. These rules gate which network targets the agents may reach — they are checked before any tool call touching a network resource.
+</Warning>
+
+### GET /api/asset-intercept/rules
+
+List all global asset intercept rules.
+
+<ResponseField name="id" type="integer">Rule ID.</ResponseField>
+<ResponseField name="type" type="string">`domain` | `ip` | `cidr` | `url_prefix`</ResponseField>
+<ResponseField name="value" type="string">The pattern value.</ResponseField>
+<ResponseField name="action" type="string">`deny` (block) or `allow` (explicit whitelist override).</ResponseField>
+<ResponseField name="enabled" type="boolean">Whether the rule is active.</ResponseField>
+
+---
+
+### POST /api/asset-intercept/rules
+
+Create a new asset intercept rule.
+
+<ParamField body="type" type="string" required>
+  `domain` | `ip` | `cidr` | `url_prefix`
+</ParamField>
+
+<ParamField body="value" type="string" required>
+  The pattern, e.g., `"evil.com"`, `"192.168.1.1"`, `"10.0.0.0/8"`, or `"https://do-not-scan.internal/"`.
+</ParamField>
+
+<ParamField body="action" type="string" required>
+  `deny` to block, `allow` to whitelist.
+</ParamField>
+
+<ParamField body="enabled" type="boolean">
+  Whether the rule should be active immediately. Defaults to `true`.
+</ParamField>
+
+---
+
+### PUT /api/asset-intercept/rules/{id}
+
+Replace all fields of an existing rule.
+
+---
+
+### DELETE /api/asset-intercept/rules/{id}
+
+Delete an asset intercept rule permanently.
+
+---
+
+### POST /api/asset-intercept/rules/{id}/toggle
+
+Toggle a rule's `enabled` state without modifying other fields.
+
+<ResponseField name="enabled" type="boolean">The new enabled state after the toggle.</ResponseField>
