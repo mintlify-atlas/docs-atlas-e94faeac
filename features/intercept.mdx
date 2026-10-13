@@ -1,7 +1,7 @@
 ---
-title: "Tool Intercept & Approval Gate System in Artex"
+title: "Tool Intercept & Human Approval Gate System in Artex"
 sidebarTitle: "Intercept"
-description: "Control which agent tool calls execute automatically and which require human or model approval, with configurable rules, pending queues, and full execution audit trails."
+description: "Control which agent tool calls run automatically and which need human or model approval, with layered rules, pending queues, and full audit trails."
 ---
 
 Artex's intercept system acts as a safety gate between LLM agents and real-world actions. Before any tool call marked as potentially destructive executes, it is checked against a layered rule set that can allow it outright, deny it, or hold it for review. This gives operators fine-grained control over agent autonomy — especially important in a research environment where an agent may attempt to call destructive endpoints.
@@ -35,11 +35,11 @@ Rules are evaluated in order; the first matching rule wins. If no rule matches, 
 Artex ships with two categories of built-in rules that are applied by default. You can disable or delete them from **System → Command Intercept**.
 
 <CardGroup cols={2}>
-  <Card title="HTTP Destructive Methods" icon="triangle-exclamation">
-    Intercepts any tool call that issues an HTTP request with a `DELETE`, `PUT`, or similarly destructive HTTP method.
+  <Card title="HTTP DELETE Method" icon="triangle-exclamation">
+    Intercepts any tool call that issues an HTTP request using the `DELETE` method — covering `curl -X DELETE`, Python `requests.delete()` / `httpx` / `aiohttp`, and `axios.delete()` / `method: 'DELETE'` in scripts.
   </Card>
   <Card title="Delete-Path Patterns" icon="trash">
-    Intercepts calls whose URL path contains delete-like verbs: `/delete`, `/del`, `/remove`, `/unlink`, `/erase`, `/destroy`. The verb must be followed by a path separator to avoid false matches on words like `/delivery` or `/details`.
+    Intercepts calls whose URL path contains delete-like verbs: `/delete`, `/del`, `/remove`, `/unlink`, `/erase`, `/destroy` (including suffixed forms like `/deleteAll` or `/delete_user`). The verb must be followed by a path separator or end-of-path so `/delivery`, `/details`, and `/delta` are not affected.
   </Card>
 </CardGroup>
 

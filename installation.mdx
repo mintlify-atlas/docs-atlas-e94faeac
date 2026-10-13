@@ -1,7 +1,7 @@
 ---
-title: "All Artex Installation Methods Explained"
+title: "Artex Installation Guide: All Five Methods Explained"
 sidebarTitle: "Installation"
-description: "Five Artex install paths — install script, Docker Compose, prebuilt binary, source build, and release packaging — each with exact shell commands to follow."
+description: "Five install paths for Artex: install script, Docker Compose, prebuilt binary, source build, and release packaging — each with exact commands to follow."
 ---
 
 Artex ships in several forms to fit different environments: a Docker image for the simplest setup, prebuilt binaries for air-gapped machines, and full source builds for anyone who wants to modify the code. All five methods produce the same runtime — a single Go binary that embeds the Next.js frontend and listens on port **8787** by default.
@@ -67,7 +67,7 @@ Any extra arguments are forwarded verbatim to the `artex` binary:
 
     1. Asks how to handle PostgreSQL: connect to an existing instance, or spin up a fresh one in Docker
     2. Generates a `config.json` with the database connection details
-    3. Checks for Go (≥ 1.21) — exits with a helpful error if not found
+    3. Checks for Go (≥ 1.26) — exits with a helpful error if not found
     4. If `npm` is available: builds the Next.js static export, copies it into `server/webui/dist`, and compiles the `embedui`-tagged binary
     5. If `npm` is absent: compiles a backend-only binary (you'll need to run the frontend separately with `npm run dev`)
     6. Starts the binary
@@ -153,6 +153,10 @@ Any extra arguments are forwarded verbatim to the `artex` binary:
     }
     ```
 
+    <Note>
+      `config.example.json` ships with `"port": 5433` as a deliberate placeholder to remind you to verify the value. Change it to `5432` (or whatever port your PostgreSQL instance uses) before starting Artex.
+    </Note>
+
     You can also use a single DSN string instead of individual fields:
 
     ```json config.json
@@ -185,7 +189,7 @@ Any extra arguments are forwarded verbatim to the `artex` binary:
   <Tab title="4 · Build from Source">
     ### Build from Source
 
-    Building from source produces the same single embedded binary as the release zips. You need **Go** (check `go.mod` for the minimum version) and **Node.js / npm**.
+    Building from source produces the same single embedded binary as the release zips. You need **Go ≥ 1.26** and **Node.js / npm**.
 
     **Step 1 — Build the Next.js static export**
 

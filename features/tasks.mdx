@@ -1,7 +1,7 @@
 ---
-title: "Task System: Lifecycle, Goals, and Controls"
+title: "Artex Tasks: Lifecycle, Goals, Controls, and Archives"
 sidebarTitle: "Tasks"
-description: "How Artex tasks work — from creation through archiving — including lifecycle states, scope, goals, constraints, archives, and worker-level controls."
+description: "How Artex tasks work — from creation through archiving — covering lifecycle states, scope, goals, constraints, archives, and worker-level intent controls."
 ---
 
 A **task** in Artex is a bounded, autonomous exploration campaign directed at a specific target scope. When you create a task you give it a free-text description and a goal; from that point on the planner and worker agents drive the entire investigation independently, reading and writing the dual-graph (Exploration Graph + Asset Graph) until every goal is proved or you stop it manually. This page covers the full lifecycle of a task, from first creation to final archival.
@@ -180,15 +180,15 @@ Any confirmed finding can be retested by a dedicated **retester agent** without 
     The UI displays a spinner and "Retesting" label while the agent session is active. Click through to the session to watch live output.
   </Step>
   <Step title="Review Conclusion">
-    When the retester finishes it records one of three conclusions:
+    When the retester finishes it records one of three verdicts:
 
-    | Conclusion | Meaning |
+    | Verdict | Meaning |
     |---|---|
-    | **Still reproducible** | The vulnerability can still be triggered |
-    | **Fixed** | The vulnerability is no longer present |
-    | **Cannot confirm** | The agent could not reach a definitive conclusion |
+    | `reproduced` | The vulnerability can still be triggered |
+    | `fixed` | The vulnerability is no longer present |
+    | `inconclusive` | The agent could not reach a definitive conclusion |
 
-    If the conclusion is **Fixed**, Artex automatically updates the finding's disposition status to `fixed`.
+    If the verdict is `fixed`, Artex automatically updates the finding's disposition status to `fixed`.
   </Step>
 </Steps>
 

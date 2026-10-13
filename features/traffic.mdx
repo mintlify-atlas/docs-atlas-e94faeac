@@ -1,7 +1,7 @@
 ---
 title: "Traffic Recording: MITM Proxy and Evidence Capture"
 sidebarTitle: "Traffic Recording"
-description: "How Artex's built-in MITM proxy intercepts, stores, and searches HTTP/HTTPS traffic, and how captures are attached to vulnerability findings as structured proof."
+description: "How Artex's MITM proxy intercepts and stores HTTP/HTTPS traffic from agent tools, and how captures are bound to vulnerability findings as evidence."
 ---
 
 Artex ships with a transparent **MITM recording proxy** that captures every HTTP and HTTPS exchange made by worker agents during exploration. Because all agent-issued HTTP requests flow through this proxy, every piece of traffic the agents generate — tool calls, web fetches, exploit attempts — is automatically logged with full request and response detail, ready to attach to a finding as evidence.
@@ -146,11 +146,15 @@ Traffic captures are the primary form of machine-readable proof in Artex finding
 
 ### Attaching Traffic to a Finding
 
-```http
-POST /api/exploration/findings/{id}/retests   ← retest agent also auto-binds
-```
+Workers call `report_finding` with a `traffic_refs` array to bind captures when writing a finding. Traffic bindings on an existing finding are managed through the finding's traffic sub-resource:
 
-Workers call `report_finding` with a `traffic_refs` array:
+```http
+GET    /api/exploration/findings/{id}/traffic
+POST   /api/exploration/findings/{id}/traffic
+PATCH  /api/exploration/findings/{id}/traffic/{binding_id}
+DELETE /api/exploration/findings/{id}/traffic/{binding_id}
+PUT    /api/exploration/findings/{id}/traffic/order
+```
 
 ```json
 {

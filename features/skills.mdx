@@ -1,7 +1,7 @@
 ---
-title: "Reusable Agent Skills — Procedures on Demand"
+title: "Reusable Agent Skills — Packaged Procedures on Demand"
 sidebarTitle: "Skills"
-description: "Package multi-step attack procedures into versioned SKILL.md files that agents invoke by name, with built-in skills for API recon, browser automation, and ScopeSentry."
+description: "Package attack procedures into SKILL.md files that agents invoke by name. Includes built-in skills for API recon, browser automation, and ScopeSentry."
 ---
 
 Skills are named, reusable instruction packages that agents can invoke on demand. Instead of embedding complex multi-step procedures directly into an agent's system prompt — where they inflate context for every turn — a skill's instructions are loaded only when needed and injected as standing guidance that survives context compaction. Skills follow the [agentskills.io](https://agentskills.io) open standard, making them portable and easy to author.
@@ -144,10 +144,10 @@ Artex supports Deflate, Bzip2, and Zstandard compressed zips. Encrypted archives
 The file manager under a skill entry lets you read, write, create directories, and delete files within the skill directory. This is how you update scripts, add reference documents, or modify the `SKILL.md` itself without shell access.
 
 ```bash
-GET  /api/skills/{name}/files/{path}   # read a file
-PUT  /api/skills/{name}/files/{path}   # write a file
-DELETE /api/skills/{name}/files/{path} # delete a file or directory
-POST /api/skills/{name}/dirs           # create a directory
+GET    /api/skills/{name}/files/{file...}   # read a file
+PUT    /api/skills/{name}/files/{file...}   # write a file
+DELETE /api/skills/{name}/files/{file...}   # delete a file or directory
+POST   /api/skills/{name}/dirs              # create a directory
 ```
 
 ### Deleting a Skill

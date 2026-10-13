@@ -172,9 +172,12 @@ Traffic records link HTTP requests/responses captured during testing to findings
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/exploration/findings/{id}/traffic` | List traffic records bound to this finding |
-| `GET` | `/api/exploration/findings/{id}/traffic/{tid}` | Get full request/response detail |
 | `POST` | `/api/exploration/findings/{id}/traffic` | Bind a traffic record to a finding |
-| `DELETE` | `/api/exploration/findings/{id}/traffic/{tid}` | Unbind traffic from a finding |
+| `PATCH` | `/api/exploration/findings/{id}/traffic/{binding_id}` | Update a traffic binding (e.g., notes) |
+| `DELETE` | `/api/exploration/findings/{id}/traffic/{binding_id}` | Unbind traffic from a finding |
+| `PUT` | `/api/exploration/findings/{id}/traffic/order` | Reorder traffic bindings for a finding |
+| `GET` | `/api/exploration/findings/{id}/traffic/{binding_id}` | Get full request/response detail for one binding |
+| `GET` | `/api/exploration/findings/{id}/traffic/{binding_id}/body` | Get raw body content for a traffic binding |
 
 ---
 

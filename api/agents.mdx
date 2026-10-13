@@ -1,6 +1,6 @@
 ---
 title: "Artex Agents & Skills API: Configure AI Agents and Tools"
-sidebarTitle: "Agents & Skills API"
+sidebarTitle: "Agents & Skills"
 description: "Manage agent configuration, prompts, triggers, built-in and custom tools, skills, MCP server integrations, and notification channels."
 ---
 
@@ -34,6 +34,20 @@ List all agents (built-in and custom).
 
 ---
 
+### POST /api/agents
+
+Create a new custom agent.
+
+<ParamField body="key" type="string" required>Unique string key for the agent (lowercase, underscores only). Cannot be changed after creation.</ParamField>
+<ParamField body="name" type="string" required>Display name shown in the agent list.</ParamField>
+<ParamField body="description" type="string">What this agent does (shown in the UI and exposed to LLM context).</ParamField>
+<ParamField body="role" type="string">Agent role — `custom` for user-defined agents.</ParamField>
+<ParamField body="enabled" type="boolean">Whether the agent participates in task execution. Defaults to `true`.</ParamField>
+
+**Response:** `201` with the created `AgentDTO`.
+
+---
+
 ### GET /api/agents/{key}
 
 Fetch a single agent's full configuration by its key.
@@ -58,9 +72,43 @@ Update agent configuration fields.
 
 ---
 
+### PUT /api/agents/{key}/config
+
+Save the complete configuration for an agent in one call, replacing all editable fields atomically. Accepts the same fields as `PATCH /api/agents/{key}` plus prompt and wrapup prompt fields.
+
+<ParamField body="name" type="string">Display name.</ParamField>
+<ParamField body="description" type="string">Agent description.</ParamField>
+<ParamField body="enabled" type="boolean">Enable or disable the agent.</ParamField>
+<ParamField body="max_turns" type="integer">Maximum turns per run.</ParamField>
+<ParamField body="run_seconds" type="integer">Wall-clock budget in seconds.</ParamField>
+<ParamField body="llm_profile_id" type="integer">Bound LLM profile ID.</ParamField>
+<ParamField body="trigger_run_mode" type="string">`serial` or `parallel`.</ParamField>
+
+---
+
 ### DELETE /api/agents/{key}
 
 Delete a custom agent. Built-in agents (`planner`, `worker`) cannot be deleted.
+
+---
+
+## Agent Visibility
+
+Visibility controls which agents are shown on the chat and agent management pages.
+
+### GET /api/agents/{key}/visibility
+
+Return the visibility settings for an agent.
+
+<ResponseField name="hidden" type="boolean">Whether the agent is hidden from the chat page selector.</ResponseField>
+<ResponseField name="hidden_from_task" type="boolean">Whether the agent is hidden from the task agent-binding UI.</ResponseField>
+
+### PUT /api/agents/{key}/visibility
+
+Update the visibility settings for an agent.
+
+<ParamField body="hidden" type="boolean">Hide this agent from the chat page selector.</ParamField>
+<ParamField body="hidden_from_task" type="boolean">Hide this agent from the task agent-binding UI.</ParamField>
 
 ---
 

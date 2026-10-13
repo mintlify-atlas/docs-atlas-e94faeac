@@ -1,7 +1,7 @@
 ---
-title: "Model Context Protocol (MCP) Integration in Artex"
+title: "MCP Server Integration for Artex Agent Tool Extension"
 sidebarTitle: "MCP Integration"
-description: "Connect external MCP servers to Artex agents over Streamable HTTP or legacy SSE transports, with skill-declared server unlocking and automatic output truncation."
+description: "Connect external MCP servers to Artex agents over Streamable HTTP or SSE, with skill-declared unlocking, tool naming conventions, and output truncation."
 ---
 
 The Model Context Protocol (MCP) is an open standard for exposing tools to LLM agents. Any software that implements an MCP server can publish a set of typed tools that agents discover at runtime and call like any other tool. Artex acts as an MCP client — you configure MCP servers in the UI and their tools appear in your agents' tool lists automatically under a predictable naming convention.

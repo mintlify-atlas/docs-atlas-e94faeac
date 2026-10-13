@@ -97,7 +97,7 @@ Pass startup flags after `start.sh` — they are forwarded transparently to the 
 ./start.sh -addr :8787 -proxy :8788
 ```
 
-`-addr` sets the frontend + API listen address. `-proxy` sets the traffic-recording MITM proxy port. Both default to `:8787` and `:8788` respectively.
+`-addr` sets the frontend + API listen address. `-proxy` sets the traffic-recording MITM proxy port. `-addr` defaults to `:8787` (all interfaces) and `-proxy` defaults to `127.0.0.1:8788` (loopback only).
 
 ## Building from Source
 

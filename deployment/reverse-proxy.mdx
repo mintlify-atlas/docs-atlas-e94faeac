@@ -10,7 +10,7 @@ Artex serves the frontend, REST API, and the SSE event stream all from a single 
 
 | Port | Bound to | Purpose |
 |---|---|---|
-| `8787` | `0.0.0.0` (configurable) | Frontend (Next.js static files), REST API (`/api/*`), SSE (`/api/events`) |
+| `8787` | `0.0.0.0` (configurable) | Frontend (Next.js static files), REST API (`/api/*`), SSE streams (`/api/exploration/activity/stream`, `/api/logs/stream`, `/api/update/stream`) |
 | `8788` | `127.0.0.1` | Traffic-recording MITM proxy — **do not expose publicly** |
 
 <Warning>
@@ -66,10 +66,10 @@ SSE is a persistent HTTP/1.1 connection over which the server pushes newline-del
 Pass `-addr` and `-proxy` to `start.sh` to change the listen addresses. The wrapper forwards all arguments directly to the Artex binary:
 
 ```bash
-# Frontend + API on :8787, traffic proxy on :8788 (defaults)
-./start.sh -addr :8787 -proxy :8788
+# Explicit defaults: frontend + API on :8787 (all interfaces), traffic proxy on 127.0.0.1:8788
+./start.sh -addr :8787 -proxy 127.0.0.1:8788
 
-# Listen on a different port or restrict to localhost
+# Restrict the API listener to localhost as well
 ./start.sh -addr 127.0.0.1:8787 -proxy 127.0.0.1:8788
 ```
 

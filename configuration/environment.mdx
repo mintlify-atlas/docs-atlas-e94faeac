@@ -1,7 +1,7 @@
 ---
 title: "Artex Environment Variable Reference for All Settings"
 sidebarTitle: "Environment Vars"
-description: "Complete reference for every environment variable Artex reads at startup or build time, with types, defaults, and precedence notes for database, LLM, Docker, and frontend settings."
+description: "Complete reference for every Artex environment variable at startup or build time, grouped by database, LLM, Docker Compose, and frontend build concerns."
 ---
 
 Artex reads configuration from environment variables, a `config.json` file, and the database — in that priority order. This page documents every environment variable the system recognises, whether it is consumed by the Go backend, the Docker Compose stack, or the Next.js frontend at build time. Variables are grouped by concern.
@@ -93,9 +93,13 @@ Artex reads configuration from environment variables, a `config.json` file, and 
 
 <ParamField body="ARTEX_NOTIFY_ALLOW_LOCAL" type="string" default="(unset — loopback delivery blocked)">
   Set to `1` to allow Artex's notification delivery engine to send webhook or
-  IM notifications to loopback addresses (`127.0.0.1`, `::1`) and private
-  network ranges. By default, delivery to these destinations is blocked as a
-  safety measure. Enable only in isolated lab environments.
+  IM notifications to loopback addresses (`127.0.0.1`, `::1`) and link-local
+  addresses (including the cloud metadata endpoint `169.254.169.254`). By
+  default, delivery to these destinations is blocked to prevent SSRF attacks
+  via notification webhooks. RFC 1918 private network ranges (e.g.
+  `192.168.x.x`, `10.x.x.x`) are **not** blocked, since on-premises SMTP
+  relays and IM bots commonly live on private IPs. Enable only in isolated lab
+  environments.
 
   ```bash
   ARTEX_NOTIFY_ALLOW_LOCAL=1

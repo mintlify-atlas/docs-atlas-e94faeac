@@ -1,7 +1,7 @@
 ---
-title: "Artex API Reference: Authentication & Overview"
+title: "Artex API Reference: Authentication & Endpoints Overview"
 sidebarTitle: "Overview"
-description: "Base URL, JWT authentication flow, first-run setup, SSE streams, health check, and stats endpoint for the Artex HTTP API."
+description: "Base URL, JWT authentication, first-run setup, SSE streams, health check, and stats endpoint for the Artex JSON/HTTP API. All routes require Bearer tokens."
 ---
 
 The Artex backend exposes a single JSON/HTTP API served by the embedded Go binary. Every request and response uses `Content-Type: application/json`. The API is protected by JWT (HS256) except for the auth bootstrap endpoints and the health check. All endpoints are prefixed with `/api/`.
@@ -12,7 +12,7 @@ The Artex backend exposes a single JSON/HTTP API served by the embedded Go binar
 http://localhost:8787
 ```
 
-The port can be changed via the `PORT` environment variable or a configuration file. When running behind a reverse proxy, adjust accordingly.
+The listen address can be changed via the `-addr` flag (e.g., `./start.sh -addr :9000`). When running behind a reverse proxy, adjust accordingly.
 
 ---
 
@@ -93,7 +93,7 @@ curl http://localhost:8787/api/stats \
 ```
 
 <Note>
-  For SSE streaming endpoints (`/api/logs/stream`, `/api/exploration/activity/stream`) the token can alternatively be passed as a `?token=<jwt>` query parameter or an `artex_token` cookie, because browser `EventSource` does not support custom headers.
+  For SSE streaming endpoints (`/api/logs/stream`, `/api/exploration/activity/stream`) the token can alternatively be passed as a `?token=<jwt>` query parameter or stored in an `artex_token` cookie, because browser `EventSource` does not support custom headers.
 </Note>
 
 ---

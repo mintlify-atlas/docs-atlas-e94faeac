@@ -1,7 +1,7 @@
 ---
 title: "Configuring PostgreSQL for Artex: Connection & Schema"
 sidebarTitle: "Database"
-description: "Set up Artex's PostgreSQL connection using config.json field-by-field or a full DSN string. Covers environment variable overrides, connection pooling, and schema auto-migration."
+description: "Set up Artex PostgreSQL connection using config.json fields or a full DSN string, with ARTEX_PG_DSN override, connection pool, and auto-migration."
 ---
 
 Artex uses PostgreSQL as its sole persistent store, holding both the global Asset Graph and all per-task Exploration Graphs. You must supply a working PostgreSQL connection before Artex can start — there is no embedded or fallback database. Connection settings are read at startup from `config.json`, with an environment variable override that always wins.
@@ -31,10 +31,10 @@ Copy `config.example.json` to `config.json` in the same directory as the Artex b
   assembled from individual fields.
 </ParamField>
 
-<ParamField body="database.port" type="integer" default="5432">
+<ParamField body="database.port" type="integer" default="5433">
   TCP port the PostgreSQL server listens on. The example file uses `5433` to
   avoid clashing with a locally-installed system Postgres. Change to `5432` for
-  a default install.
+  a default PostgreSQL install.
 </ParamField>
 
 <ParamField body="database.user" type="string">

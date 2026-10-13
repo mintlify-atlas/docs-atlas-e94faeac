@@ -1,7 +1,7 @@
 ---
 title: "Vulnerability Findings: Lifecycle, Evidence, and Export"
 sidebarTitle: "Findings"
-description: "How Artex records, classifies, and manages vulnerability findings — from initial discovery through lineage tracing, traffic evidence, retesting, and bulk export."
+description: "How Artex records and manages vulnerability findings — from discovery through lineage tracing, traffic evidence, retesting, and bulk export."
 ---
 
 When a worker agent confirms a vulnerability it calls `report_finding`, which writes a **finding node** into both the per-task Exploration Graph and a separate, task-independent findings table. Because findings live in their own table they survive task deletion, making them a durable record of everything Artex has confirmed across all campaigns.
@@ -39,10 +39,15 @@ Every finding has two independent attributes you can update at any time.
 
 | Status | Meaning |
 |---|---|
-| `open` | Confirmed, not yet addressed |
-| `fixed` | Verified as remediated (can be set manually or automatically by retest) |
-| `accepted` | Risk accepted — will not be fixed |
+| `pending` | Newly written, awaiting triage |
+| `in_progress` | Actively being investigated or remediated |
+| `confirmed` | Confirmed as a real vulnerability, not yet fixed |
+| `resolved` | Addressed or remediated |
+| `fixed` | Verified as fully fixed (can be set manually or automatically by retest) |
 | `false_positive` | Confirmed as not a real vulnerability |
+| `ignored` | Acknowledged but not acted upon |
+| `duplicate` | A repeat of another recorded finding |
+| `risk_accepted` | Risk formally accepted — will not be fixed |
 
 ```http
 PATCH /api/exploration/findings/{id}
@@ -169,11 +174,11 @@ Retesting runs a dedicated `retester` agent in an isolated session. It does not 
   </Step>
   <Step title="View Results">
     Each completed retest records:
-    - **Conclusion** — `still_reproducible`, `fixed`, or `cannot_confirm`
+    - **Verdict** — `reproduced`, `fixed`, or `inconclusive`
     - **Evidence** — the agent's proof output
     - **Session link** — full transcript of the agent's execution
 
-    When the conclusion is `fixed`, the finding's status is automatically updated to `fixed`. All other conclusions leave the status unchanged; you can update it manually via the status dropdown.
+    When the verdict is `fixed`, the finding's status is automatically updated to `fixed`. All other verdicts leave the status unchanged; you can update it manually via the status dropdown.
   </Step>
 </Steps>
 

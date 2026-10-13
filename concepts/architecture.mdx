@@ -1,7 +1,7 @@
 ---
 title: "Artex System Architecture: A Complete Layered Overview"
 sidebarTitle: "Architecture"
-description: "Artex layers explained: embedded Next.js, Go HTTP server, event-driven engine, norma agents, PostgreSQL dual graph, MITM proxy, and all norma SDK packages."
+description: "Artex layered architecture: embedded Next.js frontend, Go HTTP server, event-driven engine, norma SDK agents, PostgreSQL dual graph, and MITM proxy."
 ---
 
 Artex is built as a single Go binary that embeds a statically-exported Next.js frontend alongside a PostgreSQL-backed multi-agent system. Rather than separating concerns across microservices, every layer — from the user interface through LLM orchestration down to the database — ships as one executable. Understanding how these layers interact helps you configure the system correctly, extend it with custom agents and skills, and reason about where in the pipeline a given behavior originates.
@@ -33,7 +33,7 @@ All agent capability is provided by the [`norma`](https://github.com/Autumn-27/n
 | `agentcore` | The public entry point. Provides a stateful `Session` whose `Prompt` method streams the tool-use loop. Aggregates all other packages and supports transcript persistence for session resume. |
 | `harness` | The event loop itself. Streams `Event` values, schedules tools (parallel for read-only, serial for mutating), pairs every `tool_use` with a `tool_result`, and enforces termination reasons. |
 | `llm` | Vendor-neutral message model and `Provider` interface. `NewProvider` builds either an Anthropic or OpenAI-format adapter; both normalize to the same streaming event type. |
-| `tool` | `CoreTool` contract, fail-closed `Build` factory, JSON Schema validator, and the default tool set: Read, Write, Edit, MultiEdit, LS, Glob, Grep, Bash. Also provides WebFetch, WebSearch, TodoWrite, background-task tools, and deferred tools. |
+| `tool` | `CoreTool` contract, fail-closed `Build` factory, JSON Schema validator, and the default tool set: Read, Write, Edit, MultiEdit, LS, Glob, Grep, Bash. Also provides WebFetch, WebSearch, TodoWrite, AskUserQuestion, background-task tools, and deferred tools. |
 | `permission` | The safety boundary: allow/deny/ask decisions, six permission modes, and a four-stage evaluation pipeline. Artex runs agents in `ModeBypass` with its own guard/intercept layer. |
 | `compaction` | Context-window management. Implements Snip, MicroCompact, Context Collapse, and AutoCompact strategies so long-running agents stay within the model's context limit. |
 </Accordion>

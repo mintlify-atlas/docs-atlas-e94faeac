@@ -1,7 +1,7 @@
 ---
-title: "Configuring LLM Providers and Profiles in Artex"
+title: "Artex LLM Provider and Profile Configuration Guide"
 sidebarTitle: "LLM Setup"
-description: "Configure Artex's LLM backend with Anthropic or OpenAI-compatible providers. Covers environment variables, named profiles, per-agent bindings, the retry policy, and per-task overrides."
+description: "Configure Artex LLM with Anthropic or OpenAI-compatible providers via environment variables, named profiles, per-agent bindings, and per-task LLM chains."
 ---
 
 Artex's multi-agent system — planner, workers, goals agent, and main agent — all require an LLM provider to operate. You can supply credentials through environment variables before startup, configure everything through the dashboard's LLM Profiles page without touching files, or mix both approaches. The engine stays idle until at least one profile is configured and activated.
